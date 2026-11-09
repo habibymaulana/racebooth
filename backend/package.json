@@ -1,0 +1,38 @@
+{
+  "name": "photobooth-api",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "migrate": "node scripts/migrate.js",
+    "provision:operator": "node scripts/provision-operator.js",
+    "cleanup:expired": "node scripts/cleanup-expired-photos.js",
+    "test": "node --test test/*.test.js",
+    "test:integration": "node --test test/integration/*.test.js",
+    "test:container": "node scripts/integration-container.js",
+    "check": "node --check src/app.js && node --check src/server.js && node --check src/services.js && node --check src/n8n.js && node --check src/photos.js && node --check src/storage.js && node --check src/photo-retention.js && node --check src/r2-config.js && node --check src/gallery-sharing.js && node --check src/free-sessions.js && node --check src/qc.js && node --check src/config.js && node --check src/validation.js && node --check scripts/migrate.js && node --check scripts/provision-operator.js && node --check scripts/cleanup-expired-photos.js && node --check ../shared/frame-designs.js && node --check ../shared/camera-capture.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1164.0",
+    "bcryptjs": "^3.0.3",
+    "connect-pg-simple": "^10.0.0",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.2.1",
+    "express-session": "^1.18.2",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.16.3",
+    "qrcode": "^1.5.4",
+    "sharp": "^0.35.5",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "supertest": "^7.1.4"
+  }
+}

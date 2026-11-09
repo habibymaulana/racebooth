@@ -1,0 +1,39 @@
+# Optional isolated Hermes gateway for operator-requested, read-only QC.
+# Run alongside compose.phase1.yml. The state directory and secrets are outside the project.
+services:
+  backend:
+    environment:
+      HERMES_ENDPOINT: http://racebooth-hermes:8642
+      HERMES_API_KEY_FILE: /run/racebooth-secrets/hermes-api-key
+      HERMES_PROVIDER: groq
+      HERMES_MODEL: openai/gpt-oss-20b
+      HERMES_INFERENCE_ENABLED: "true"
+      HERMES_INFERENCE_TIMEOUT_MS: "90000"
+    volumes:
+      - type: bind
+        source: ${RACEBOOTH_HERMES_STATE_DIR:-${HOME}/.local/share/racebooth-hermes}/gateway.key
+        target: /run/racebooth-secrets/hermes-api-key
+        read_only: true
+    networks:
+      - hermes_isolated
+  hermes:
+    image: nousresearch/hermes-agent@sha256:3eadce07c6cc35599ebacfa1f7d8ee06edce6374b9d07e379d6ec825ddaa7534
+    container_name: racebooth-hermes
+    command: ["gateway", "run"]
+    environment:
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: 0.0.0.0
+      API_SERVER_PORT: "8642"
+    volumes:
+      - type: bind
+        source: ${RACEBOOTH_HERMES_STATE_DIR:-${HOME}/.local/share/racebooth-hermes}/profile
+        target: /opt/data
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - hermes_isolated
+
+networks:
+  hermes_isolated:
+    name: racebooth-hermes-net

@@ -1,0 +1,64 @@
+services:
+  - type: web
+    name: racebooth-api-staging
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    autoDeployTrigger: 'off'
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: PGSSL
+        value: "true"
+      - key: PHOTO_STORAGE_DRIVER
+        value: r2
+      - key: PHOTO_CLEANUP_ENABLED
+        value: "false"
+      - key: PHOTO_CLEANUP_INTERVAL_HOURS
+        value: "24"
+      - key: N8N_SIMULATOR_ENABLED
+        value: "false"
+      - key: N8N_ENABLED
+        value: "false"
+      - key: N8N_EMAIL_ENABLED
+        value: "false"
+      - key: HERMES_INFERENCE_ENABLED
+        value: "false"
+      - key: PGPORT
+        value: "5432"
+      - key: DATABASE_POOL_MAX
+        value: "10"
+      - key: PHOTO_GALLERY_TTL_HOURS
+        value: "24"
+      - key: PHOTO_SHARE_TTL_MINUTES
+        value: "60"
+      - key: APP_ORIGINS
+        sync: false
+      - key: PUBLIC_APP_ORIGIN
+        sync: false
+      - key: TRUST_PROXY_HOPS
+        sync: false
+      - key: PGHOST
+        sync: false
+      - key: PGDATABASE
+        sync: false
+      - key: PGUSER
+        sync: false
+      - key: PGPASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
