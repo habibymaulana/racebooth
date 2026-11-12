@@ -4,6 +4,7 @@ import { BrowserRouter } from "react-router-dom";
 import App from "./App.jsx";
 import "./styles.css";
 import "./racebooth.css";
+import "./design-system.css";
 
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>

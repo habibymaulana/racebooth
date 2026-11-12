@@ -3,12 +3,15 @@ import { mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
 import sharp from 'sharp';
 import { fail } from './errors.js';
 import { renderArtFilter } from './art-filters.js';
 import { parseR2Config } from './r2-config.js';
 
 export const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
+// Leave headroom below Vercel Functions' 4.5 MB request cap.
+export const MAX_SERVERLESS_UPLOAD_BYTES = 4_000_000;
 export const MAX_IMAGE_PIXELS = 24 * 1000 * 1000;
 export const PHOTO_FILTERS = new Set([
   'original', 'bw', 'vintage', 'warm', 'cool', 'sepia', 'contrast', 'glow',
@@ -18,6 +21,8 @@ const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const defaultRoot = fileURLToPath(new URL('../../storage/', import.meta.url));
 let r2ResourcesPromise;
+let blobSdkPromise;
+const signedReadTokens = new Map();
 
 // Module-relative local default; Docker supplies its persistent private volume path.
 export function getStorageRoot() { return resolve(process.env.PHOTO_STORAGE_PATH || defaultRoot); }
@@ -46,6 +51,59 @@ async function getR2Resources() {
     });
   }
   return r2ResourcesPromise;
+}
+
+async function getVercelBlobSdk() {
+  if (!blobSdkPromise) {
+    blobSdkPromise = import('@vercel/blob').catch(() => {
+      blobSdkPromise = undefined;
+      throw new Error('Private Vercel Blob storage is unavailable.');
+    });
+  }
+  return blobSdkPromise;
+}
+
+function mapBlobReadError(error) {
+  if (error?.name === 'BlobNotFoundError' || error?.status === 404 || error?.statusCode === 404) {
+    fail(404, 'PHOTO_FILE_UNAVAILABLE', 'The stored image is unavailable.');
+  }
+  fail(503, 'PHOTO_STORAGE_UNAVAILABLE', 'Private photo storage is temporarily unavailable.');
+}
+
+async function getPrivateBlob(storagePath) {
+  const { get } = await getVercelBlobSdk();
+  try {
+    const result = await get(validateStorageKey(storagePath), { access: 'private' });
+    if (!result || result.statusCode !== 200 || !result.stream || !Number.isFinite(result.blob?.size)
+      || result.blob.size <= 0 || result.blob.size > MAX_UPLOAD_BYTES) {
+      result?.stream?.cancel?.().catch?.(() => {});
+      fail(404, 'PHOTO_FILE_UNAVAILABLE', 'The stored image is unavailable.');
+    }
+    return result;
+  } catch (error) {
+    if (error.status) throw error;
+    mapBlobReadError(error);
+  }
+}
+
+export async function createPrivateBlobReadUrl(storagePath, { accessExpiresAt, download = false } = {}) {
+  const pathname = validateStorageKey(storagePath);
+  const now = Date.now();
+  const validUntil = Math.min(now + 60_000, Number.isFinite(accessExpiresAt) ? accessExpiresAt : Number.POSITIVE_INFINITY);
+  if (validUntil <= now) fail(410, 'GALLERY_EXPIRED', 'This gallery link has expired.');
+  const { issueSignedToken, presignUrl } = await getVercelBlobSdk();
+  let cached = signedReadTokens.get(pathname);
+  if (!cached || cached.validUntil <= now + 30_000) {
+    cached = await issueSignedToken({ pathname, operations: ['get'], validUntil: now + 10 * 60_000 });
+    signedReadTokens.set(pathname, cached);
+    if (signedReadTokens.size > 128) signedReadTokens.delete(signedReadTokens.keys().next().value);
+  }
+  const { presignedUrl } = await presignUrl(cached, {
+    pathname, operation: 'get', access: 'private', validUntil,
+  });
+  const url = new URL(presignedUrl);
+  if (download) url.searchParams.set('download', '1');
+  return { url: url.toString(), expiresAt: new Date(validUntil).toISOString() };
 }
 
 export function validateImageBuffer(buffer, claimedMime) {
@@ -115,6 +173,18 @@ async function writeImmutableImage(sessionId, prefix, buffer) {
       ContentLength: buffer.length, ContentType: 'image/jpeg', CacheControl: 'private, no-store' }));
     return { storagePath, fileSizeBytes: buffer.length };
   }
+  if (getStorageDriver() === 'vercel-blob') {
+    const { put } = await getVercelBlobSdk();
+    try {
+      await put(validateStorageKey(storagePath), buffer, {
+        access: 'private', contentType: 'image/jpeg', addRandomSuffix: false,
+        cacheControlMaxAge: 60,
+      });
+      return { storagePath, fileSizeBytes: buffer.length };
+    } catch {
+      throw new Error('Private photo storage is temporarily unavailable.');
+    }
+  }
   const directory = resolveStoragePath(relativeDirectory);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const actualRoot = await realpath(getStorageRoot()); const actualDirectory = await realpath(directory);
@@ -177,6 +247,19 @@ export async function readStoredFile(storagePath) {
       mapR2ReadError(error);
     }
   }
+  if (getStorageDriver() === 'vercel-blob') {
+    const result = await getPrivateBlob(storagePath);
+    try {
+      const chunks = [];
+      for await (const chunk of Readable.fromWeb(result.stream)) chunks.push(Buffer.from(chunk));
+      const buffer = Buffer.concat(chunks);
+      if (buffer.length !== result.blob.size || buffer.length > MAX_UPLOAD_BYTES) fail(404, 'PHOTO_FILE_UNAVAILABLE', 'The stored image is unavailable.');
+      return buffer;
+    } catch (error) {
+      if (error.status) throw error;
+      mapBlobReadError(error);
+    }
+  }
   const { handle } = await openPrivateFile(storagePath);
   try { return await handle.readFile(); } finally { await handle.close(); }
 }
@@ -195,6 +278,10 @@ export async function openStoredFile(storagePath) {
       mapR2ReadError(error);
     }
   }
+  if (getStorageDriver() === 'vercel-blob') {
+    const result = await getPrivateBlob(storagePath);
+    return { stream: Readable.fromWeb(result.stream), size: result.blob.size, mimeType: result.blob.contentType || 'image/jpeg', filename: 'racebooth-photo.jpg' };
+  }
   const { handle, size } = await openPrivateFile(storagePath);
   return { stream: handle.createReadStream({ autoClose: true }), size, mimeType: 'image/jpeg', filename: 'racebooth-photo.jpg' };
 }
@@ -203,6 +290,14 @@ export async function deleteStoredFile(storagePath) {
     const { client, bucket, DeleteObjectCommand } = await getR2Resources();
     await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: validateStorageKey(storagePath) }));
     return true;
+  }
+  if (getStorageDriver() === 'vercel-blob') {
+    const { del } = await getVercelBlobSdk();
+    try { await del(validateStorageKey(storagePath), { access: 'private' }); return true; }
+    catch (error) {
+      if (error?.name === 'BlobNotFoundError' || error?.status === 404) return false;
+      throw new Error('Private photo storage is temporarily unavailable.');
+    }
   }
   try { await unlink(resolveStoragePath(storagePath)); return true; }
   catch (error) { if (error.code === 'ENOENT') return false; throw error; }

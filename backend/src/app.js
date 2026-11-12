@@ -3,12 +3,13 @@ import session from 'express-session';
 import connectPgSimple from 'connect-pg-simple';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { ZodError } from 'zod';
-import { csrfProtection, requireOperator, login, newCsrf, saveSession, destroySession } from './auth.js';
+import { csrfProtection, requireOperator, requirePackageAdmin, login, newCsrf, saveSession, destroySession } from './auth.js';
 import {
   loginSchema, packageSchema, packagePatchSchema, transactionSchema,
+  managedPackageSchema, managedPackagePatchSchema, publicCheckoutSchema,
   confirmationSchema, uuid, publicTransactionSchema, simulatePaymentSchema,
   paymentWebhookSchema, photoUploadSchema, photostripSchema,
   freeSessionSchema, emailDeliverySchema
@@ -17,7 +18,8 @@ import { AppError, fail } from './errors.js';
 import {
   createTransaction, confirmSimulation, dashboard, getTransaction,
   listTransactions, updatePackage, getPublicPackages, createPublicTransaction,
-  getPublicTransaction, initiatePaymentSimulation, handlePaymentNotification,
+  getPublicTransaction, createManagedPackage, createAutomaticSimulatedCheckout,
+  initiatePaymentSimulation, handlePaymentNotification,
   getPublicSession
 } from './services.js';
 import { issueToken } from './n8n.js';
@@ -27,10 +29,18 @@ import { createGalleryShare, getSharedGallery, getSharedPhotoFile, getSharedStri
 import { createFreeSession, getFreeSession, sendPhotoEmail, getEmailDeliveryStatus } from './free-sessions.js';
 import { runQualityControlCheck, getQualityControlStatus, retryFailedEmail, recordQualityControlIncident, diagnoseIncident } from './qc.js';
 import QRCode from 'qrcode';
-import { MAX_UPLOAD_BYTES } from './storage.js';
+import { MAX_UPLOAD_BYTES, MAX_SERVERLESS_UPLOAD_BYTES } from './storage.js';
+import { PostgresRateLimitStore } from './postgres-rate-limit-store.js';
+import { cleanExpiredPhotoAssets } from './photo-retention.js';
 
 export function createApp({ pool, config, tokenIssuer = issueToken, sessionStore }) {
   const app = express();
+  const limiter = (namespace, options) => rateLimit({
+    ...options,
+    ...(config.SERVERLESS_DEPLOYMENT
+      ? { store: new PostgresRateLimitStore(pool, config.SESSION_SECRET, namespace) }
+      : {}),
+  });
   const simulatorOnly = (req, res, next) => config.NODE_ENV === 'production'
     ? res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Endpoint not found.' } })
     : next();
@@ -44,7 +54,7 @@ export function createApp({ pool, config, tokenIssuer = issueToken, sessionStore
   app.get('/api/health', async (req, res) => {
     await pool.query('SELECT 1'); res.json({ status: 'ok' });
   });
-  app.use('/api', rateLimit({ windowMs: 60000, limit: 180, standardHeaders: 'draft-8', legacyHeaders: false, validate: { xForwardedForHeader: false }, message: { error: { code: 'RATE_LIMITED', message: 'Too many requests. Try again shortly.' } } }));
+  app.use('/api', limiter('api', { windowMs: 60000, limit: 180, standardHeaders: 'draft-8', legacyHeaders: false, validate: { xForwardedForHeader: false }, message: { error: { code: 'RATE_LIMITED', message: 'Too many requests. Try again shortly.' } } }));
   app.use(express.json({ limit: '16kb', strict: true }));
 
   // ---------------- Public Visitor & Webhook Routes (No CSRF/Session required) ----------------
@@ -63,8 +73,23 @@ export function createApp({ pool, config, tokenIssuer = issueToken, sessionStore
   });
 
   // Public visitor photobooth endpoints
+  app.get('/api/public/features', (req, res) => {
+    res.set('Cache-Control', 'no-store').json({ emailDeliveryEnabled: Boolean(config.N8N_EMAIL_ENABLED) });
+  });
+
   app.get('/api/public/packages', async (req, res) => {
     res.json({ packages: await getPublicPackages(pool) });
+  });
+
+  const checkoutLimiter = limiter('visitor-checkout', { windowMs: 3600000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false,
+    validate: { xForwardedForHeader: false },
+    message: { error: { code: 'CHECKOUT_RATE_LIMITED', message: 'Too many sessions started from this device. Try again later.' } } });
+  app.post('/api/public/checkouts', checkoutLimiter, async (req, res) => {
+    const origin = req.get('origin');
+    if (origin && !config.APP_ORIGINS.includes(origin)) fail(403, 'ORIGIN_REJECTED', 'This browser origin is not allowed.');
+    const input = publicCheckoutSchema.parse(req.body);
+    const result = await createAutomaticSimulatedCheckout(pool, config, input, req.ip, req.requestId);
+    res.status(result.replayed ? 200 : 201).json(result);
   });
 
   app.post('/api/public/transactions', simulatorOnly, async (req, res) => {
@@ -92,7 +117,7 @@ export function createApp({ pool, config, tokenIssuer = issueToken, sessionStore
   });
 
   // ---- Free Session Routes (racebooth. — no payment required) ----
-  const freeSessionsLimiter = rateLimit({ windowMs: 3600000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false,
+  const freeSessionsLimiter = limiter('free-session', { windowMs: 3600000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false,
     validate: { xForwardedForHeader: false },
     message: { error: { code: 'FREE_SESSION_RATE_LIMITED', message: 'Too many free sessions. Try again later.' } } });
 
@@ -109,7 +134,7 @@ export function createApp({ pool, config, tokenIssuer = issueToken, sessionStore
     res.json({ freeSession: fs });
   });
 
-  const emailLimiter = rateLimit({ windowMs: 300000, limit: 5, standardHeaders: 'draft-8', legacyHeaders: false,
+  const emailLimiter = limiter('email', { windowMs: 300000, limit: 5, standardHeaders: 'draft-8', legacyHeaders: false,
     validate: { xForwardedForHeader: false },
     message: { error: { code: 'EMAIL_RATE_LIMITED', message: 'Too many email requests. Wait a few minutes.' } } });
 
@@ -131,7 +156,7 @@ export function createApp({ pool, config, tokenIssuer = issueToken, sessionStore
   // Images are streamed to Express, never through n8n or a public static directory.
   const photoOptions = { galleryTtlHours: config.PHOTO_GALLERY_TTL_HOURS ?? 24 };
   const checkoutCredential = req => req.get('x-checkout-key') || req.get('x-session-key') || '';
-  const uploads = rateLimit({ windowMs: 60000, limit: 24, standardHeaders: 'draft-8', legacyHeaders: false,
+  const uploads = limiter('upload', { windowMs: 60000, limit: 24, standardHeaders: 'draft-8', legacyHeaders: false,
     validate: { xForwardedForHeader: false }, message: { error: { code: 'UPLOAD_RATE_LIMITED', message: 'Too many photo attempts. Wait a minute before retrying.' } } });
   let admittedUploads = 0;
   async function admitUpload(req, res, next) {
@@ -146,7 +171,7 @@ export function createApp({ pool, config, tokenIssuer = issueToken, sessionStore
     next();
   }
   app.post('/api/public/sessions/:id/photos', uploads, admitUpload,
-    express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: MAX_UPLOAD_BYTES }), async (req, res) => {
+    express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: config.SERVERLESS_DEPLOYMENT ? MAX_SERVERLESS_UPLOAD_BYTES : MAX_UPLOAD_BYTES }), async (req, res) => {
       req.photoProcessing = true;
       try {
         const input = photoUploadSchema.parse({ sequence: Number(req.get('x-photo-sequence')), filter: req.get('x-photo-filter') || 'original', checkoutKey: checkoutCredential(req) });
@@ -163,6 +188,11 @@ export function createApp({ pool, config, tokenIssuer = issueToken, sessionStore
     res.status(result.replayed ? 200 : 201).json(result);
   });
   async function sendImage(req, res, file) {
+    if (file.signedUrl) {
+      res.set({ 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer' });
+      res.json({ url: file.signedUrl, expiresAt: file.expiresAt });
+      return;
+    }
     res.set({ 'Content-Type': file.mimeType, 'Content-Length': String(file.size),
       'Content-Disposition': `${req.query.download === '1' ? 'attachment' : 'inline'}; filename="${file.filename}"`,
       'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer' });
@@ -170,10 +200,10 @@ export function createApp({ pool, config, tokenIssuer = issueToken, sessionStore
     catch (error) { if (!res.headersSent) throw error; res.destroy(); }
   }
   app.get('/api/public/sessions/:id/photos/:photoId/file', async (req, res) => {
-    await sendImage(req, res, await getPhotoFile(pool, uuid.parse(req.params.id), uuid.parse(req.params.photoId), checkoutCredential(req), photoOptions));
+    await sendImage(req, res, await getPhotoFile(pool, uuid.parse(req.params.id), uuid.parse(req.params.photoId), checkoutCredential(req), { ...photoOptions, download: req.query.download === '1' }));
   });
   app.get('/api/public/sessions/:id/photostrip/file', async (req, res) => {
-    await sendImage(req, res, await getStripFile(pool, uuid.parse(req.params.id), checkoutCredential(req), photoOptions));
+    await sendImage(req, res, await getStripFile(pool, uuid.parse(req.params.id), checkoutCredential(req), { ...photoOptions, download: req.query.download === '1' }));
   });
 
   // ---------------- Public Shared Gallery & QR Endpoints ----------------
@@ -196,21 +226,47 @@ export function createApp({ pool, config, tokenIssuer = issueToken, sessionStore
   app.get('/api/public/galleries/:id/photos/:photoId/file', async (req, res) => {
     const id = uuid.parse(req.params.id);
     const photoId = uuid.parse(req.params.photoId);
-    await sendImage(req, res, await getSharedPhotoFile(pool, config, id, photoId, bearerToken(req)));
+    await sendImage(req, res, await getSharedPhotoFile(pool, config, id, photoId, bearerToken(req), { download: req.query.download === '1' }));
   });
 
   app.get('/api/public/galleries/:id/photostrip/file', async (req, res) => {
     const id = uuid.parse(req.params.id);
-    await sendImage(req, res, await getSharedStripFile(pool, config, id, bearerToken(req)));
+    await sendImage(req, res, await getSharedStripFile(pool, config, id, bearerToken(req), { download: req.query.download === '1' }));
+  });
+
+  // Vercel Cron invokes this endpoint once daily. The route remains inert until
+  // retention is deliberately enabled and a secret is provisioned.
+  app.get('/api/internal/retention/cleanup', async (req, res) => {
+    if (config.NODE_ENV !== 'production') {
+      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Endpoint not found.' } });
+    }
+    if (!config.PHOTO_CLEANUP_ENABLED) return res.status(204).end();
+    const expected = Buffer.from(`Bearer ${config.CRON_SECRET}`);
+    const supplied = Buffer.from(req.get('authorization') || '');
+    if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) {
+      return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Unauthorized.' } });
+    }
+    const report = await cleanExpiredPhotoAssets(pool, {
+      galleryTtlHours: config.PHOTO_GALLERY_TTL_HOURS,
+      batchSize: 100,
+      apply: true,
+    });
+    res.json(report);
   });
 
   // ---------------- Operator Authentication & Session Setup ----------------
 
   const PgStore = connectPgSimple(session);
+  const postgresSessionStore = sessionStore || new PgStore({
+    pool,
+    tableName: 'operator_http_sessions',
+    createTableIfMissing: false,
+    pruneSessionInterval: config.SERVERLESS_DEPLOYMENT ? false : 900,
+  });
   app.use('/api', session({
     name: config.COOKIE_SECURE ? '__Host-photobooth.sid' : 'photobooth.sid',
     secret: config.SESSION_SECRET,
-    store: sessionStore || new PgStore({ pool, tableName: 'operator_http_sessions', createTableIfMissing: false, pruneSessionInterval: 900 }),
+    store: postgresSessionStore,
     resave: false, saveUninitialized: false, rolling: false,
     cookie: { httpOnly: true, secure: config.COOKIE_SECURE, sameSite: 'strict', path: '/', maxAge: config.SESSION_MAX_AGE_HOURS * 3600000 }
   }));
@@ -220,7 +276,7 @@ export function createApp({ pool, config, tokenIssuer = issueToken, sessionStore
   });
   app.use('/api', csrfProtection(config));
   const authorized = requireOperator(pool, config);
-  app.post('/api/auth/login', rateLimit({ windowMs: 900000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false, validate: { xForwardedForHeader: false }, message: { error: { code: 'LOGIN_THROTTLED', message: 'Too many login attempts. Try again in 15 minutes.' } } }), async (req, res, next) => {
+  app.post('/api/auth/login', limiter('login', { windowMs: 900000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false, validate: { xForwardedForHeader: false }, message: { error: { code: 'LOGIN_THROTTLED', message: 'Too many login attempts. Try again in 15 minutes.' } } }), async (req, res, next) => {
     await login(pool, req, loginSchema.parse(req.body));
     await authorized(req, res, next);
   }, (req, res) => res.json({ user: req.user, csrfToken: req.session.csrfToken }));
@@ -234,14 +290,29 @@ export function createApp({ pool, config, tokenIssuer = issueToken, sessionStore
   // ---------------- Operator Protected Routes ----------------
 
   app.use('/api', authorized);
+  app.use('/api', (req, res, next) => {
+    if (req.user?.role === 'supervisor' && req.method !== 'GET') fail(403, 'READ_ONLY_ROLE', 'Supervisor accounts are read-only.');
+    next();
+  });
   app.get('/api/dashboard', async (req, res) => res.json(await dashboard(pool, req.user.id)));
-  app.get('/api/packages', async (req, res) => res.json({ packages: (await pool.query('SELECT * FROM photo_packages ORDER BY created_at DESC')).rows }));
-  app.post('/api/packages', async (req, res) => {
+  app.get('/api/packages', async (req, res) => res.json({ packages: (await pool.query('SELECT * FROM photo_packages ORDER BY display_order ASC,created_at ASC')).rows }));
+  app.post('/api/packages', requirePackageAdmin, async (req, res) => {
     const p = packageSchema.parse(req.body);
-    const result = await pool.query('INSERT INTO photo_packages(name,price_idr,photo_limit,session_duration_minutes,is_active) VALUES($1,$2,$3,$4,$5) RETURNING *', [p.name, p.price_idr, p.photo_limit, p.session_duration_minutes, p.is_active]);
+    const result = await pool.query(`INSERT INTO photo_packages(name,price_idr,photo_limit,session_duration_minutes,is_active,description,benefits,display_order)
+      VALUES($1,$2,$3,$4,$5,'','[]'::jsonb,0) RETURNING *`, [p.name, p.price_idr, p.photo_limit, p.session_duration_minutes, p.is_active]);
     res.status(201).json({ package: result.rows[0] });
   });
-  app.patch('/api/packages/:id', async (req, res) => res.json({ package: await updatePackage(pool, uuid.parse(req.params.id), packagePatchSchema.parse(req.body)) }));
+  app.patch('/api/packages/:id', requirePackageAdmin, async (req, res) => res.json({ package: await updatePackage(pool, uuid.parse(req.params.id), packagePatchSchema.parse(req.body)) }));
+  app.get('/api/admin/packages', requirePackageAdmin, async (req, res) => res.json({ packages: (await pool.query('SELECT * FROM photo_packages ORDER BY display_order ASC,created_at ASC')).rows }));
+  app.post('/api/admin/packages', requirePackageAdmin, async (req, res) => {
+    const input = managedPackageSchema.parse(req.body);
+    const pkg = await createManagedPackage(pool, input, config.FREE_SESSION_DURATION_MINUTES);
+    res.status(201).json({ package: pkg });
+  });
+  app.patch('/api/admin/packages/:id', requirePackageAdmin, async (req, res) => {
+    const input = managedPackagePatchSchema.parse(req.body);
+    res.json({ package: await updatePackage(pool, uuid.parse(req.params.id), input) });
+  });
   app.get('/api/transactions', async (req, res) => res.json({ transactions: await listTransactions(pool, req.user.id) }));
   app.post('/api/transactions', simulatorOnly, async (req, res) => {
     const result = await createTransaction(pool, req.user.id, transactionSchema.parse(req.body));
@@ -259,7 +330,7 @@ export function createApp({ pool, config, tokenIssuer = issueToken, sessionStore
   // ---------------- Operator Quality Control & Hermes Monitoring ----------------
   app.get('/api/qc/status', async (req, res) => res.json(await getQualityControlStatus(pool, config)));
   app.post('/api/qc/check', async (req, res) => res.json(await runQualityControlCheck(pool, config, req.user?.email || 'operator')));
-  app.post('/api/qc/incidents/:id/diagnose', rateLimit({ windowMs: 3600000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false }), async (req, res) => res.json({ diagnosis: await diagnoseIncident(pool, config, uuid.parse(req.params.id)) }));
+  app.post('/api/qc/incidents/:id/diagnose', limiter('qc-diagnosis', { windowMs: 3600000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false }), async (req, res) => res.json({ diagnosis: await diagnoseIncident(pool, config, uuid.parse(req.params.id)) }));
   app.post('/api/qc/retry-email/:deliveryId', async (req, res) => res.json(await retryFailedEmail(pool, config, uuid.parse(req.params.deliveryId))));
 
   // ---------------- Error Handling ----------------

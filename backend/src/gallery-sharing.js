@@ -113,14 +113,14 @@ export async function getSharedGallery(pool, config, sessionId, shareToken) {
   }
   return { ...gallery, ...publicScope(claims) };
 }
-export async function getSharedPhotoFile(pool, config, sessionId, photoId, shareToken) {
+export async function getSharedPhotoFile(pool, config, sessionId, photoId, shareToken, options = {}) {
   const { checkoutKey, claims } = await verifyGalleryShare(pool, config, sessionId, shareToken);
   if (typeof photoId !== 'string' || !uuid.test(photoId)) fail(400, 'PHOTO_INVALID', 'Invalid photo identifier.');
   if (claims.scope === 'strip' || (claims.scope === 'photo' && claims.photo_id !== photoId.toLowerCase())) fail(403, 'SHARE_SCOPE_DENIED', 'This link does not grant access to that photo.');
-  return getPhotoFile(pool, sessionId, photoId, checkoutKey, policy(config));
+  return getPhotoFile(pool, sessionId, photoId, checkoutKey, { ...policy(config), accessExpiresAt: claims.exp * 1000, download: options.download === true });
 }
-export async function getSharedStripFile(pool, config, sessionId, shareToken) {
+export async function getSharedStripFile(pool, config, sessionId, shareToken, options = {}) {
   const { checkoutKey, claims } = await verifyGalleryShare(pool, config, sessionId, shareToken);
   if (claims.scope === 'photo') fail(403, 'SHARE_SCOPE_DENIED', 'This link does not grant access to the photostrip.');
-  return getStripFile(pool, sessionId, checkoutKey, policy(config));
+  return getStripFile(pool, sessionId, checkoutKey, { ...policy(config), accessExpiresAt: claims.exp * 1000, download: options.download === true });
 }

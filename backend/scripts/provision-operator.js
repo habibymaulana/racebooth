@@ -27,9 +27,10 @@ async function hiddenPrompt(label) {
 }
 let pool;
 try {
-  const { values } = parseArgs({ options: { email: { type: 'string' }, name: { type: 'string' } } });
-  const operator = z.object({ email: z.email().trim().toLowerCase().max(254), name: z.string().trim().min(2).max(100) }).parse(values);
-  const password = await hiddenPrompt('New operator password (16+ characters, hidden): ');
+  const { values } = parseArgs({ options: { email: { type: 'string' }, name: { type: 'string' }, role: { type: 'string', default: 'operator' } } });
+  const account = z.object({ email: z.email().trim().toLowerCase().max(254), name: z.string().trim().min(2).max(100), role: z.enum(['operator', 'admin']) }).parse(values);
+  const label = account.role === 'admin' ? 'administrator' : 'operator';
+  const password = await hiddenPrompt(`New ${label} password (16+ characters, hidden): `);
   if (password.length < 16 || password.length > 1024) throw new Error('Password must contain 16–1024 characters.');
   const confirmation = await hiddenPrompt('Confirm password (hidden): ');
   if (password !== confirmation) throw new Error('Passwords do not match.');
@@ -37,10 +38,10 @@ try {
   pool = createPool(loadConfig());
   await transaction(pool, async db => {
     await db.query("SELECT pg_advisory_xact_lock(hashtextextended('photobooth-operator-provision', 0))");
-    const exists = await db.query('SELECT id FROM app_users WHERE lower(email)=lower($1)', [operator.email]);
+    const exists = await db.query('SELECT id FROM app_users WHERE lower(email)=lower($1)', [account.email]);
     if (exists.rowCount) throw new Error('That email already exists. Provisioning never changes existing accounts.');
-    await db.query("INSERT INTO app_users(full_name,email,password_hash,role,is_active) VALUES($1,$2,$3,'operator',TRUE)", [operator.name, operator.email, passwordHash]);
+    await db.query("INSERT INTO app_users(full_name,email,password_hash,role,is_active) VALUES($1,$2,$3,$4,TRUE)", [account.name, account.email, passwordHash, account.role]);
   });
-  console.log('Operator provisioned. Log in through the dashboard.');
+  console.log(`${label[0].toUpperCase()}${label.slice(1)} provisioned. Log in through the dashboard.`);
 } catch (error) { console.error(`Provisioning failed: ${error.code || (error instanceof z.ZodError ? 'Invalid --email or --name.' : error.message)}`); process.exitCode = 1; }
 finally { if (pool) await pool.end(); }

@@ -8,12 +8,31 @@ const fields = {
 };
 export const packageSchema = z.object({ ...fields, is_active: fields.is_active.default(true) }).strict();
 export const packagePatchSchema = z.object(fields).partial().strict().refine(o => Object.keys(o).length > 0, 'At least one field is required.');
+const managedPackageFields = {
+  name: z.string().trim().min(2).max(100),
+  price_idr: z.number().int().min(0).max(1000000000),
+  description: z.string().trim().max(400),
+  benefits: z.array(z.string().trim().min(1).max(120)).max(8),
+  is_active: z.boolean(),
+  display_order: z.number().int().min(0).max(10000)
+};
+export const managedPackageSchema = z.object({ ...managedPackageFields, is_active: managedPackageFields.is_active.default(true), display_order: managedPackageFields.display_order.default(0), description: managedPackageFields.description.default(''), benefits: managedPackageFields.benefits.default([]) }).strict();
+export const managedPackagePatchSchema = z.object(managedPackageFields).partial().strict().refine(o => Object.keys(o).length > 0, 'At least one field is required.');
 export const transactionSchema = z.object({ packageId: uuid, idempotencyKey: uuid }).strict();
 export const confirmationSchema = z.object({ confirmation: z.literal('SIMULATED_PAYMENT') }).strict();
 
 export const publicTransactionSchema = z.object({
   packageId: uuid,
   idempotencyKey: z.string().uuid().optional()
+}).strict();
+
+export const publicCheckoutSchema = z.object({
+  packageId: uuid,
+  idempotencyKey: uuid,
+  frameDesign: z.enum([
+    'blueberry','pink-diary','retro-bloom','midnight-film','sunny-picnic','sweet-memories',
+    'doodle-booth','retro-checker','denim-memories','polka-party','heart-collage','vintage-film'
+  ])
 }).strict();
 
 export const simulatePaymentSchema = z.object({

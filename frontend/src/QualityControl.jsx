@@ -5,14 +5,14 @@ const time = value => value ? new Date(value).toLocaleString('en-GB', { timeZone
 
 export function IncidentDiagnosis({ diagnosis }) {
   if (!diagnosis) return null;
-  return <div style={{ padding: 12, background: '#f1f6f3', borderRadius: 8 }}>
+  return <div className="qc-diagnosis">
     <strong>Hermes diagnosis · {diagnosis.severity} · {diagnosis.model}</strong>
     <p>{diagnosis.diagnosis}</p><p><strong>Probable root cause:</strong> {diagnosis.probable_root_cause}</p>
     <p><strong>Recommendation:</strong> {diagnosis.recommendation}</p><small>Generated {time(diagnosis.created_at)} (Jakarta)</small>
   </div>;
 }
 
-export default function QualityControl() {
+export default function QualityControl({ readOnly = false }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -68,7 +68,7 @@ export default function QualityControl() {
   const hermes = data?.hermes;
 
   return <div className="qc-dashboard">
-    <div className="section-heading">
+    <div className="section-heading qc-page-heading">
       <span className="eyebrow">RACEBOOTH OPERATIONS</span>
       <h1>Quality control</h1>
       <p>Recorded failures, database checks, private storage checks, and service connectivity.</p>
@@ -76,15 +76,16 @@ export default function QualityControl() {
     {loading && <p role="status">Loading recorded QC status…</p>}
     {error && <div className="notice error" role="alert">{error}</div>}
     {message && <div className="notice info" role="status">{message}</div>}
-    <section className="panel" style={{ marginBottom: 20 }}>
+    <section className="panel qc-panel">
       <div className="section-heading"><h2>Run diagnostics</h2><p>Checks record findings for operator review. They do not alter photos, sessions, workflows, or infrastructure.</p></div>
-      <button className="button primary" onClick={run} disabled={running || loading}>{running ? 'Running checks…' : 'Run system QC check'}</button>
+      {!readOnly && <button className="button primary" onClick={run} disabled={running || loading}>{running ? 'Running checks…' : 'Run system QC check'}</button>}
+      {readOnly && <p className="muted">Supervisor access is read-only.</p>}
       <p className="muted">Last recorded run: {time(data?.lastRun?.created_at)} (Jakarta)</p>
       {data?.lastRun && <p>{data.lastRun.summary}</p>}
     </section>
-    <section className="panel" style={{ marginBottom: 20 }}>
+    <section className="panel qc-panel">
       <h2>Hermes Agent connection</h2>
-      <p><strong>{hermes?.status ? hermes.status.toUpperCase() : 'STATUS UNKNOWN'}</strong></p>
+      <p className="qc-hermes-status"><strong>{hermes?.status ? hermes.status.toUpperCase() : 'STATUS UNKNOWN'}</strong></p>
       <p>{hermes?.message || 'No verified Hermes status has been loaded.'}</p>
       <p className="muted">Operator-requested diagnoses are {hermes?.inferenceEnabled ? 'enabled' : 'disabled'}. Hermes provides recommendations only; system checks remain independent.</p>
       {hermes?.inferenceEnabled && <p className="muted">Configured model: {hermes.configuredProvider || 'provider unknown'} · {hermes.configuredModel || 'model unknown'}. A saved inference through this target is {hermes.modelVerified ? 'verified' : 'not yet verified'}.</p>}
@@ -92,29 +93,29 @@ export default function QualityControl() {
       {hermes?.setupInstructions && <ul>{hermes.setupInstructions.map(step => <li key={step}>{step}</li>)}</ul>}
       <p><a href="https://hermes-agent.nousresearch.com/docs/getting-started/quickstart" target="_blank" rel="noreferrer">Official Hermes setup guide</a></p>
     </section>
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 16, marginBottom: 20 }}>
+    <div className="qc-count-grid">
       {[['Critical open', counts?.critical_count], ['Warning open', counts?.warning_count], ['Information open', counts?.info_count]].map(([label, value]) => <section className="panel" key={label}>
-        <p className="muted">{label}</p><strong style={{ fontSize: 28 }}>{value ?? '—'}</strong>
+        <p className="muted">{label}</p><strong className="qc-count-value">{value ?? '—'}</strong>
       </section>)}
     </div>
-    <section className="panel" style={{ marginBottom: 20 }}>
+    <section className="panel qc-panel">
       <h2>Latest check results</h2>
-      {checks.length ? <div style={{ display: 'grid', gap: 12 }}>{checks.map(check => <article key={check.name} style={{ borderBottom: '1px solid #dce4df', paddingBottom: 12 }}>
+      {checks.length ? <div className="qc-check-list">{checks.map(check => <article key={check.name}>
         <strong>{check.name}</strong> <span className="badge">{check.status}</span><p>{check.message}</p>
       </article>)}</div> : <p>No completed diagnostic results are recorded. Run a QC check to inspect the current system.</p>}
     </section>
-    <section className="panel">
+    <section className="panel qc-panel">
       <h2>Recorded incidents</h2>
       <p className="muted">Up to 50 most recently detected incidents. Open incidents remain in the audit history until an operator reconciles them.</p>
-      {!data ? <p>Incident status is unknown until data loads successfully.</p> : incidents.length === 0 ? <p>No incidents are recorded. This alone does not establish that all services are healthy.</p> : <div style={{ display: 'grid', gap: 14 }}>
-        {incidents.map(incident => <article key={incident.id} style={{ padding: 16, border: '1px solid #dce4df', borderRadius: 10, overflowWrap: 'anywhere' }}>
+      {!data ? <p>Incident status is unknown until data loads successfully.</p> : incidents.length === 0 ? <p>No incidents are recorded. This alone does not establish that all services are healthy.</p> : <div className="qc-incident-list">
+        {incidents.map(incident => <article key={incident.id}>
           <span className="badge">{incident.severity.toUpperCase()} · {incident.category} · {incident.status}</span>
           <h3>{incident.title}</h3><p>{incident.description}</p>
           {incident.recommendation && <p><strong>Review:</strong> {incident.recommendation}</p>}
           <IncidentDiagnosis diagnosis={incident.ai_diagnosis} />
           <p className="muted">Detected {time(incident.detected_at)} (Jakarta)</p>
-          <button className="button secondary" disabled={!hermes?.inferenceEnabled || !!diagnosing} onClick={() => diagnose(incident.id)}>{diagnosing === incident.id ? 'Requesting diagnosis…' : 'Request Hermes diagnosis'}</button>{' '}
-          {incident.category === 'email' && incident.title === 'Photo email delivery failed' && incident.entity_id && incident.status === 'open' && <button className="button secondary" disabled={!!retrying} onClick={() => retry(incident.entity_id)}>{retrying === incident.entity_id ? 'Requesting retry…' : 'Retry definite failed delivery'}</button>}
+          {!readOnly && <><button className="button secondary" disabled={!hermes?.inferenceEnabled || !!diagnosing} onClick={() => diagnose(incident.id)}>{diagnosing === incident.id ? 'Requesting diagnosis…' : 'Request Hermes diagnosis'}</button>{' '}
+          {incident.category === 'email' && incident.title === 'Photo email delivery failed' && incident.entity_id && incident.status === 'open' && <button className="button secondary" disabled={!!retrying} onClick={() => retry(incident.entity_id)}>{retrying === incident.entity_id ? 'Requesting retry…' : 'Retry definite failed delivery'}</button>}</>}
         </article>)}
       </div>}
     </section>

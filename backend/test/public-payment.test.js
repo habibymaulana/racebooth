@@ -23,7 +23,7 @@ test('public packages endpoint returns active packages without authentication or
   const pool = {
     async query(sql) {
       if (sql === 'SELECT 1') return { rowCount: 1, rows: [{ '?column?': 1 }] };
-      if (sql.includes('FROM photo_packages WHERE is_active = TRUE')) {
+      if (sql.includes('FROM photo_packages WHERE is_active=TRUE AND photo_limit=4')) {
         return { rowCount: packages.length, rows: packages };
       }
       throw new Error(`Unexpected query: ${sql}`);

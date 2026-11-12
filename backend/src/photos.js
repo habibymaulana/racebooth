@@ -2,7 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import sharp from 'sharp';
 import { fail } from './errors.js';
 import { FRAME_LAYOUT, FRAME_DESIGNS, renderFrameSvg } from '../../shared/frame-designs.js';
-import { normalizeImage, savePhotoFile, saveStripFile, readStoredFile, openStoredFile, removeUncommittedFile, PHOTO_FILTERS } from './storage.js';
+import { normalizeImage, savePhotoFile, saveStripFile, readStoredFile, openStoredFile, createPrivateBlobReadUrl, getStorageDriver, removeUncommittedFile, PHOTO_FILTERS } from './storage.js';
 
 const digest = value => createHash('sha256').update(value).digest();
 
@@ -66,7 +66,8 @@ function authorizeSession(session, credential, options = {}) {
 export async function verifySessionAccess(db, sessionId, credential, options = {}) {
   const result = await db.query(`SELECT s.id,s.status,s.photo_limit,s.photos_taken,s.token_expires_at,s.access_token_hash,
     s.created_at,p.name AS package_name,p.session_duration_minutes,t.payment_status,t.paid_at,t.cancelled_at,t.refunded_at,pcs.checkout_key,
-    fs.id AS free_session_id,fs.frame_design
+    fs.id AS free_session_id,pcs.flow_type,COALESCE(fs.frame_design,pcs.frame_design) AS frame_design,
+    (fs.id IS NOT NULL OR pcs.flow_type='visitor') AS public_booth_flow
     FROM photobooth_sessions s JOIN payment_transactions t ON t.id=s.transaction_id
     JOIN photo_packages p ON p.id=s.package_id
     LEFT JOIN public_checkout_sessions pcs ON pcs.transaction_id=t.id
@@ -101,9 +102,9 @@ export async function uploadPhoto(pool, sessionId, body, buffer, options = {}) {
   if (!Number.isInteger(sequence) || sequence < 1 || sequence > 1000) fail(400, 'SEQUENCE_INVALID', 'Invalid photo sequence.');
   if (!PHOTO_FILTERS.has(filter)) fail(400, 'FILTER_INVALID', 'Choose a supported photo filter.');
   const access = await verifySessionAccess(pool, sessionId, checkoutKey, options);
-  // Free racebooth captures are always immutable originals. Paid historical
-  // sessions retain their old upload behavior for compatibility.
-  const effectiveFilter = access.free_session_id ? 'original' : filter;
+  // Public booth captures remain immutable originals; visitors choose an edit
+  // after confirming all four. Historical operator sessions keep old behavior.
+  const effectiveFilter = access.public_booth_flow ? 'original' : filter;
   const image = await normalizeImage(buffer, options.claimedMime, effectiveFilter);
   const uploaded = await withLockedSession(pool, sessionId, checkoutKey, options, async (db, session, trackFile) => {
     if (sequence > session.photo_limit) fail(422, 'SEQUENCE_OUT_OF_RANGE', `This session allows ${session.photo_limit} accepted photos.`);
@@ -125,11 +126,12 @@ export async function uploadPhoto(pool, sessionId, body, buffer, options = {}) {
       RETURNING *`, [sessionId, sequence, effectiveFilter, file.storagePath, file.fileSizeBytes, image.width, image.height]);
     if (Date.now() >= new Date(session.token_expires_at).getTime()) fail(410, 'SESSION_EXPIRED', 'The capture session expired before this photo was saved.');
     await db.query("UPDATE photobooth_sessions SET photos_taken=$2,status='active' WHERE id=$1", [sessionId, count.rows[0].count + 1]);
-    return { photo: publicPhoto(result.rows[0]), replayed: false, sessionFrame: session.frame_design || null, freeSession: Boolean(session.free_session_id) };
+    return { photo: publicPhoto(result.rows[0]), replayed: false, sessionFrame: session.frame_design || null,
+      freeSession: Boolean(session.free_session_id), publicBoothFlow: Boolean(session.public_booth_flow) };
   });
-  // Composition is automatic for the new public free flow. A failure leaves
+  // Composition is automatic for new public booth flows. A failure leaves
   // the four originals safely stored so the client can retry the preview.
-  if (uploaded.freeSession && sequence === access.photo_limit && !uploaded.replayed) {
+  if (uploaded.publicBoothFlow && sequence === access.photo_limit && !uploaded.replayed) {
     try {
       const preview = await composePhotostrip(pool, sessionId, {
         checkoutKey, background: access.frame_design, filter: 'original', finalize: false, editRevision: 0,
@@ -156,15 +158,33 @@ export async function getSessionGallery(db, sessionId, credential, options = {})
     photos: photos.rows.map(publicPhoto), strip: publicStrip(strip.rows[0]) };
 }
 export async function getPhotoFile(db, sessionId, photoId, credential, options = {}) {
-  await verifySessionAccess(db, sessionId, credential, options);
-  const result = await db.query("SELECT storage_path,sequence FROM session_photos WHERE id=$1 AND session_id=$2 AND status='saved'", [photoId, sessionId]);
+  const session = await verifySessionAccess(db, sessionId, credential, options);
+  const result = await db.query("SELECT storage_path,sequence,file_size_bytes FROM session_photos WHERE id=$1 AND session_id=$2 AND status='saved'", [photoId, sessionId]);
   if (!result.rowCount) fail(404, 'PHOTO_NOT_FOUND', 'Photo not found in this session.');
+  if (getStorageDriver() === 'vercel-blob') {
+    // Keep binary downloads on the authenticated API response. The preview
+    // path uses a short-lived private Blob URL so <img> needs no bearer token.
+    if (options.download) return { ...await openStoredFile(result.rows[0].storage_path), filename: `racebooth-photo-${String(result.rows[0].sequence).padStart(2, '0')}.jpg` };
+    const galleryExpiry = new Date(session.token_expires_at).getTime() + (options.galleryTtlHours ?? 24) * 3600000;
+    const accessExpiresAt = Math.min(galleryExpiry, options.accessExpiresAt ?? Number.POSITIVE_INFINITY);
+    const signed = await createPrivateBlobReadUrl(result.rows[0].storage_path, { accessExpiresAt });
+    return { signedUrl: signed.url, expiresAt: signed.expiresAt, size: result.rows[0].file_size_bytes,
+      mimeType: 'image/jpeg', filename: `racebooth-photo-${String(result.rows[0].sequence).padStart(2, '0')}.jpg` };
+  }
   return { ...await openStoredFile(result.rows[0].storage_path), filename: `racebooth-photo-${String(result.rows[0].sequence).padStart(2, '0')}.jpg` };
 }
 export async function getStripFile(db, sessionId, credential, options = {}) {
-  await verifySessionAccess(db, sessionId, credential, options);
-  const result = await db.query("SELECT storage_path FROM session_photostrips WHERE session_id=$1 AND status='composed'", [sessionId]);
+  const session = await verifySessionAccess(db, sessionId, credential, options);
+  const result = await db.query("SELECT storage_path,file_size_bytes FROM session_photostrips WHERE session_id=$1 AND status='composed'", [sessionId]);
   if (!result.rowCount) fail(404, 'STRIP_NOT_READY', 'The photostrip has not been composed yet.');
+  if (getStorageDriver() === 'vercel-blob') {
+    if (options.download) return { ...await openStoredFile(result.rows[0].storage_path), filename: 'racebooth-photostrip.jpg' };
+    const galleryExpiry = new Date(session.token_expires_at).getTime() + (options.galleryTtlHours ?? 24) * 3600000;
+    const accessExpiresAt = Math.min(galleryExpiry, options.accessExpiresAt ?? Number.POSITIVE_INFINITY);
+    const signed = await createPrivateBlobReadUrl(result.rows[0].storage_path, { accessExpiresAt });
+    return { signedUrl: signed.url, expiresAt: signed.expiresAt, size: result.rows[0].file_size_bytes,
+      mimeType: 'image/jpeg', filename: 'racebooth-photostrip.jpg' };
+  }
   return { ...await openStoredFile(result.rows[0].storage_path), filename: 'racebooth-photostrip.jpg' };
 }
 
@@ -174,17 +194,17 @@ export async function composePhotostrip(pool, sessionId, body, options = {}) {
   if (!PHOTO_FILTERS.has(filter)) fail(400, 'FILTER_INVALID', 'Choose a supported photostrip filter.');
   return withLockedSession(pool, sessionId, checkoutKey, options, async (db, session, trackFile) => {
     const existing = (await db.query('SELECT * FROM session_photostrips WHERE session_id=$1', [sessionId])).rows[0];
-    if (session.free_session_id && requestedBackground && requestedBackground !== session.frame_design) {
+    if (session.public_booth_flow && requestedBackground && requestedBackground !== session.frame_design) {
       fail(409, 'FRAME_LOCKED', 'This session frame was selected before capture and cannot be changed.');
     }
-    const background = session.free_session_id
+    const background = session.public_booth_flow
       ? session.frame_design
       : (requestedBackground || existing?.background || 'white');
     if (!Object.hasOwn(backgrounds, background)) fail(400, 'BACKGROUND_INVALID', 'Choose a supported photostrip background.');
-    if (session.free_session_id && background !== session.frame_design) fail(409, 'FRAME_LOCKED', 'This session frame was selected before capture and cannot be changed.');
+    if (session.public_booth_flow && background !== session.frame_design) fail(409, 'FRAME_LOCKED', 'This session frame was selected before capture and cannot be changed.');
     if (existing?.status === 'composed') {
       if (existing.background !== background) {
-        fail(409, session.free_session_id ? 'FRAME_LOCKED' : 'STRIP_ALREADY_COMPOSED', session.free_session_id
+        fail(409, session.public_booth_flow ? 'FRAME_LOCKED' : 'STRIP_ALREADY_COMPOSED', session.public_booth_flow
           ? 'This session frame was selected before capture and cannot be changed.'
           : 'This session already has a composed photostrip.');
       }

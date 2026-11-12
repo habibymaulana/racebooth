@@ -11,6 +11,7 @@
     "start": "node src/server.js",
     "migrate": "node scripts/migrate.js",
     "provision:operator": "node scripts/provision-operator.js",
+    "provision:admin": "node scripts/provision-operator.js --role admin",
     "cleanup:expired": "node scripts/cleanup-expired-photos.js",
     "test": "node --test test/*.test.js",
     "test:integration": "node --test test/integration/*.test.js",
@@ -19,6 +20,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1164.0",
+    "@vercel/blob": "^2.6.1",
     "bcryptjs": "^3.0.3",
     "connect-pg-simple": "^10.0.0",
     "dotenv": "^17.2.3",

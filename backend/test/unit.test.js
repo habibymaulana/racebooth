@@ -10,7 +10,8 @@ import { join } from 'node:path';
 import { hashPassword, verifyPassword, encryptToken, decryptToken } from '../src/security.js';
 import { loadConfig } from '../src/config.js';
 import { parseR2Config } from '../src/r2-config.js';
-import { packageSchema, packagePatchSchema, transactionSchema, confirmationSchema } from '../src/validation.js';
+import { PostgresRateLimitStore } from '../src/postgres-rate-limit-store.js';
+import { packageSchema, packagePatchSchema, managedPackageSchema, managedPackagePatchSchema, publicCheckoutSchema, transactionSchema, confirmationSchema } from '../src/validation.js';
 
 const configEnv = overrides => ({
   NODE_ENV: 'test', PGHOST: 'database.invalid', PGPORT: '5432', PGDATABASE: 'isolated_unit_test',
@@ -38,6 +39,23 @@ test('supported existing bcrypt passwords remain usable', async () => {
   const existing = await bcrypt.hash(password, 10);
   assert.equal(await verifyPassword(password, existing), true);
   assert.equal(await verifyPassword('incorrect', existing), false);
+});
+
+test('managed package validation rejects negative prices, invalid order and incompatible photo limits', () => {
+  const valid = { name: 'Keepsake', price_idr: 45000, description: 'Four photos in one strip.', benefits: ['Private gallery'], is_active: true, display_order: 2 };
+  assert.equal(managedPackageSchema.parse(valid).price_idr, 45000);
+  assert.throws(() => managedPackageSchema.parse({ ...valid, price_idr: -1 }));
+  assert.throws(() => managedPackageSchema.parse({ ...valid, price_idr: 1.5 }));
+  assert.throws(() => managedPackageSchema.parse({ ...valid, benefits: Array(9).fill('Benefit') }));
+  assert.throws(() => managedPackagePatchSchema.parse({ display_order: -1 }));
+  assert.throws(() => managedPackageSchema.parse({ ...valid, photo_limit: 6 }));
+});
+
+test('visitor checkout accepts package id, idempotency key and supported frame only', () => {
+  const valid = { packageId: randomUUID(), idempotencyKey: randomUUID(), frameDesign: 'retro-checker' };
+  assert.deepEqual(publicCheckoutSchema.parse(valid), valid);
+  assert.throws(() => publicCheckoutSchema.parse({ ...valid, price_idr: 1 }));
+  assert.throws(() => publicCheckoutSchema.parse({ ...valid, frameDesign: 'not-a-frame' }));
 });
 
 test('token encryption is randomized, authenticated, and bound to its transaction', () => {
@@ -77,9 +95,9 @@ test('configuration rejects insecure production cookies and incomplete enabled J
     NODE_ENV: 'production', COOKIE_SECURE: 'true', PGSSL: 'true', TRUST_PROXY_HOPS: '1',
     APP_ORIGINS: 'http://localhost', PHOTO_STORAGE_PATH: '/var/lib/racebooth/photos'
   })), /HTTPS/);
-  assert.throws(() => loadConfig(configEnv({ ...validProduction, PHOTO_STORAGE_DRIVER: 'local' })), /PHOTO_STORAGE_DRIVER=r2/);
+  assert.throws(() => loadConfig(configEnv({ ...validProduction, PHOTO_STORAGE_DRIVER: 'local' })), /private durable photo storage/);
   assert.throws(() => loadConfig(configEnv({ ...validProduction, R2_SECRET_ACCESS_KEY: '' })), /Cloudflare R2 storage configuration/);
-  assert.throws(() => loadConfig(configEnv({ PHOTO_CLEANUP_ENABLED: 'true' })), /cleanup can be enabled only in production with private R2/);
+  assert.throws(() => loadConfig(configEnv({ PHOTO_CLEANUP_ENABLED: 'true' })), /cleanup can be enabled only in production with private durable storage/);
   assert.throws(() => loadConfig(configEnv({
     ...validProduction, N8N_SIMULATOR_ENABLED: 'true'
   })), /N8N_SIMULATOR_ENABLED/);
@@ -101,6 +119,66 @@ test('configuration rejects insecure production cookies and incomplete enabled J
   }
   assert.throws(() => loadConfig(configEnv({ ...validJwt, N8N_WEBHOOK_URL: 'http://user:password@workflow.invalid/webhook' })), /webhook URL/);
   assert.throws(() => loadConfig(configEnv({ ...validJwt, N8N_JWT_TTL_SECONDS: '3600' })), /N8N_JWT_TTL_SECONDS/);
+});
+
+test('serverless configuration uses pooled PostgreSQL URL, a small pool, and private Blob auth', () => {
+  const databaseUrl = 'postgresql://racebooth:placeholder@database.invalid/app?sslmode=require';
+  const cloudEnv = {
+    ...configEnv({
+      NODE_ENV: 'production', COOKIE_SECURE: 'true', PGSSL: 'true', TRUST_PROXY_HOPS: '1',
+      APP_ORIGINS: 'https://booth.example.invalid', PUBLIC_APP_ORIGIN: 'https://booth.example.invalid',
+      SERVERLESS_DEPLOYMENT: 'true', DATABASE_URL: databaseUrl, DATABASE_POOL_MAX: '3',
+      PHOTO_STORAGE_DRIVER: 'vercel-blob', BLOB_STORE_ID: 'store_placeholder',
+    }),
+  };
+  const config = loadConfig(cloudEnv);
+  assert.equal(new URL(config.pg.connectionString).searchParams.has('sslmode'), false);
+  assert.equal(config.pg.ssl.rejectUnauthorized, true);
+  assert.equal(config.pg.max, 3);
+  assert.equal(config.SERVERLESS_DEPLOYMENT, true);
+  assert.throws(() => loadConfig({ ...cloudEnv, DATABASE_POOL_MAX: '6' }), /DATABASE_POOL_MAX of 5 or less/);
+  assert.throws(() => loadConfig({ ...cloudEnv, BLOB_STORE_ID: '' }), /connected private store/);
+  assert.throws(() => loadConfig({ ...cloudEnv, SERVERLESS_DEPLOYMENT: 'true', DATABASE_URL: '' }), /pooled DATABASE_URL/);
+  assert.throws(() => loadConfig({ ...cloudEnv, PHOTO_CLEANUP_ENABLED: 'true', CRON_SECRET: '' }), /CRON_SECRET/);
+});
+
+test('serverless preview uses the deployment URL for exact same-origin checks and gallery links', () => {
+  const config = loadConfig(configEnv({
+    NODE_ENV: 'production', COOKIE_SECURE: 'true', PGSSL: 'true', TRUST_PROXY_HOPS: '1',
+    SERVERLESS_DEPLOYMENT: 'true', DATABASE_URL: 'postgresql://racebooth:placeholder@database.invalid/app',
+    DATABASE_POOL_MAX: '3', PHOTO_STORAGE_DRIVER: 'vercel-blob', BLOB_STORE_ID: 'store_placeholder',
+    APP_ORIGINS: '', PUBLIC_APP_ORIGIN: '',
+    VERCEL_URL: 'racebooth-preview-123.vercel.app', VERCEL_ENV: 'preview',
+  }));
+  assert.deepEqual(config.APP_ORIGINS, ['https://racebooth-preview-123.vercel.app']);
+  assert.equal(config.PUBLIC_APP_ORIGIN, 'https://racebooth-preview-123.vercel.app');
+  assert.throws(() => loadConfig(configEnv({
+    NODE_ENV: 'production', COOKIE_SECURE: 'true', PGSSL: 'true', TRUST_PROXY_HOPS: '1',
+    SERVERLESS_DEPLOYMENT: 'true', DATABASE_URL: 'postgresql://racebooth:placeholder@database.invalid/app',
+    DATABASE_POOL_MAX: '3', PHOTO_STORAGE_DRIVER: 'vercel-blob', BLOB_STORE_ID: 'store_placeholder',
+    APP_ORIGINS: '', PUBLIC_APP_ORIGIN: '',
+    VERCEL_URL: 'https://invalid.vercel.app', VERCEL_ENV: 'preview',
+  })), /VERCEL_URL must be a deployment hostname/);
+});
+
+test('Postgres rate-limit store shares counters and stores only keyed digests', async () => {
+  const calls = [];
+  const pool = { query: async (sql, params) => {
+    calls.push({ sql, params });
+    if (sql.includes('RETURNING hits')) return { rows: [{ hits: '4', reset_at: '2026-11-09T00:01:00Z' }] };
+    return { rows: [], rowCount: 1 };
+  } };
+  const store = new PostgresRateLimitStore(pool, 'a'.repeat(64), 'upload');
+  store.init({ windowMs: 60_000 });
+  const result = await store.increment('203.0.113.17');
+  assert.equal(result.totalHits, 4);
+  assert.ok(result.resetTime instanceof Date);
+  assert.notEqual(calls[0].params[1], '203.0.113.17');
+  assert.equal(calls[0].params[1].length, 64);
+  await store.decrement('203.0.113.17');
+  await store.resetKey('203.0.113.17');
+  await store.resetAll();
+  assert.equal(calls.length, 4);
 });
 
 test('Cloudflare R2 configuration validates identifiers without an account lookup', () => {
@@ -184,6 +262,14 @@ async function loggedInFixture() {
   return { ...fixture, oldCsrf: fixture.csrf, csrf: response.body.csrfToken, loginCookie: response.headers['set-cookie'][0] };
 }
 
+test('public feature flags disclose only whether email delivery is enabled', async () => {
+  const { agent, pool } = await appFixture();
+  const response = await agent.get('/api/public/features').expect(200);
+  assert.deepEqual(response.body, { emailDeliveryEnabled: false });
+  assert.equal(response.headers['cache-control'], 'no-store');
+  assert.equal(pool.queries.length, 0);
+});
+
 test('HTTP API blocks unauthenticated reads, confirmation, and token issuance', async () => {
   const { agent, csrf, pool } = await appFixture();
   for (const url of ['/api/auth/me', '/api/packages', '/api/transactions', '/api/dashboard']) {
@@ -226,7 +312,7 @@ test('HTTP login returns the same generic rejection for wrong passwords and unkn
   const attempt = body => agent.post('/api/auth/login').set('X-CSRF-Token', csrf).send(body).expect(401);
   const incorrect = await attempt({ email: account.email, password: `${password}wrong` });
   const unknown = await attempt({ email: 'missing-fixture@example.invalid', password });
-  account.role = 'supervisor';
+  account.role = 'service';
   const disallowed = await attempt({ email: account.email, password });
   for (const response of [incorrect, unknown, disallowed]) {
     assert.deepEqual(response.body.error, { code: 'INVALID_CREDENTIALS', message: 'Invalid operator email or password.' });
@@ -236,8 +322,10 @@ test('HTTP login returns the same generic rejection for wrong passwords and unkn
 test('HTTP authorization rereads active role instead of trusting the browser session', async () => {
   const fixture = await loggedInFixture();
   fixture.account.role = 'supervisor';
-  const forbidden = await fixture.agent.get('/api/packages').expect(403);
-  assert.equal(forbidden.body.error.code, 'OPERATOR_REQUIRED');
+  const currentUser = await fixture.agent.get('/api/auth/me').expect(200);
+  assert.equal(currentUser.body.user.role, 'supervisor');
+  const forbidden = await fixture.agent.post(`/api/transactions/${randomUUID()}/confirm-simulation`).set('X-CSRF-Token', fixture.csrf).send({ confirmation: 'SIMULATED_PAYMENT' }).expect(403);
+  assert.equal(forbidden.body.error.code, 'READ_ONLY_ROLE');
   fixture.account.role = 'operator';
   fixture.account.is_active = false;
   await fixture.agent.post(`/api/transactions/${randomUUID()}/confirm-simulation`).set('X-CSRF-Token', fixture.csrf).send({ confirmation: 'SIMULATED_PAYMENT' }).expect(401);
@@ -251,7 +339,7 @@ test('HTTP rejects tampered transaction and confirmation input before business q
   const invalid = await agent.post('/api/transactions').set('X-CSRF-Token', csrf).send({ packageId: randomUUID(), idempotencyKey: randomUUID(), amount_idr: 1, payment_status: 'paid' }).expect(400);
   assert.equal(invalid.body.error.code, 'VALIDATION_ERROR');
   await agent.post(`/api/transactions/${randomUUID()}/confirm-simulation`).set('X-CSRF-Token', csrf).send({ confirmation: 'PAID' }).expect(400);
-  await agent.post('/api/packages').set('X-CSRF-Token', csrf).send({ name: 'Invalid package', price_idr: -1, photo_limit: 0, session_duration_minutes: 0 }).expect(400);
+  await agent.post('/api/packages').set('X-CSRF-Token', csrf).send({ name: 'Invalid package', price_idr: -1, photo_limit: 0, session_duration_minutes: 0 }).expect(403);
   assert.equal(pool.queries.slice(before).every(q => q.sql.includes('FROM app_users WHERE id=')), true);
 });
 

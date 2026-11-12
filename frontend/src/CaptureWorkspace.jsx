@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
+import { Check } from "lucide-react";
 import CameraCapture from "./CameraCapture";
 import { api, errorMessage } from "./api";
 import {
@@ -109,7 +110,7 @@ function ResultsPhotoCard({ photo, access }) {
         {image.loading ? (
           <div className="gallery-image-loading"><span className="spinner" /></div>
         ) : image.url ? (
-          <img src={image.url} alt={`Saved photo ${photo.sequence} (${filterLabel(photo.filter)})`} />
+          <img src={image.url} referrerPolicy="no-referrer" alt={`Saved photo ${photo.sequence} (${filterLabel(photo.filter)})`} />
         ) : (
           <div className="gallery-image-error">{image.error}</div>
         )}
@@ -167,6 +168,7 @@ export default function CaptureWorkspace({ sessionId, checkoutKey, freeSessionId
   const [shareError, setShareError] = useState(null);
   const [copied, setCopied] = useState(false);
   const shareRequestedRef = useRef(false);
+  const [emailDeliveryEnabled, setEmailDeliveryEnabled] = useState(false);
 
   // Photostrip download state
   const [stripDownloading, setStripDownloading] = useState(false);
@@ -202,6 +204,14 @@ export default function CaptureWorkspace({ sessionId, checkoutKey, freeSessionId
   // Load photostrip image when available
   const stripPath = hasStrip ? `${access.base}/photostrip/file` : null;
   const stripImage = useStoredImage(stripPath, access, strip?.edit_revision || 0);
+
+  useEffect(() => {
+    let active = true;
+    api.get('/public/features')
+      .then(({ data: features }) => { if (active) setEmailDeliveryEnabled(features.emailDeliveryEnabled === true); })
+      .catch(() => { if (active) setEmailDeliveryEnabled(false); });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     if (strip?.selected_filter) {
@@ -359,22 +369,17 @@ export default function CaptureWorkspace({ sessionId, checkoutKey, freeSessionId
           {!hasStrip && (
             <>
               <div className="capture-session-summary">
-                <div>
-                  <span className="session-pill">
-                    {freeSessionId ? "FREE SESSION" : "SESSION"} · {session.status.toUpperCase()}
-                  </span>
+                <div className="capture-session-copy">
+                  <div className="capture-session-overline">
+                    <span className="capture-session-type">{freeSessionId ? "FREE SESSION" : "PACKAGE SESSION"}</span>
+                    <span className="capture-session-status">{session.status}</span>
+                  </div>
                   <h2>{session.package_name || "racebooth. session"}</h2>
-                  <p>Capture until {formatDate(session.token_expires_at)} WIB</p>
-                </div>
-                <div
-                  className="capture-progress"
-                  aria-label={`${photos.length} of ${session.photo_limit} photos saved`}
-                >
-                  <strong>
-                    {photos.length}
-                    <span> / {session.photo_limit}</span>
-                  </strong>
-                  <small>photos saved</small>
+                  <p>
+                    <span>{photos.length} of {session.photo_limit} photos saved</span>
+                    <span>Capture until {formatDate(session.token_expires_at)} WIB</span>
+                    {frameInfo && <span>{frameInfo.name} frame</span>}
+                  </p>
                 </div>
               </div>
 
@@ -392,9 +397,9 @@ export default function CaptureWorkspace({ sessionId, checkoutKey, freeSessionId
                           : ""
                       }
                     >
-                      <span>
+                      <span className="capture-slot-number">
                         {accepted.has(index + 1)
-                          ? "✓"
+                          ? <Check size={15} strokeWidth={2} aria-label="Saved" />
                           : String(index + 1).padStart(2, "0")}
                       </span>
                       <strong>
@@ -435,7 +440,7 @@ export default function CaptureWorkspace({ sessionId, checkoutKey, freeSessionId
             <section className="post-capture-editor rb-card" aria-labelledby="edit-title">
               <div className="rb-card-header"><div><span className="rb-eyebrow">STEP 3 OF 3</span><h2 id="edit-title">Make it yours</h2><p className="rb-card-subtext">Choose a look for your four-photo memory strip. The original frame stays locked.</p></div><span className="locked-frame-label">Frame locked · {FRAMES.find((frame) => frame.id === background)?.name || background}</span></div>
               <div className="editor-strip-preview" aria-label="Processed photostrip preview">
-                {stripImage.loading || filterPending ? <span className="spinner" /> : stripImage.url ? <img src={stripImage.url} alt={`Photostrip with ${filterLabel(strip?.selected_filter)} applied`} /> : <span className="gallery-image-error">{stripImage.error}</span>}
+                {stripImage.loading || filterPending ? <span className="spinner" /> : stripImage.url ? <img src={stripImage.url} referrerPolicy="no-referrer" alt={`Photostrip with ${filterLabel(strip?.selected_filter)} applied`} /> : <span className="gallery-image-error">{stripImage.error}</span>}
               </div>
               <div className="filter-picker-header"><strong>{filterCategory === "basic" ? "Basic presets" : "Artistic styles"}</strong><button type="button" className="filter-category-toggle" aria-pressed={filterCategory === "art"} onClick={() => setFilterCategory(filterCategory === "basic" ? "art" : "basic")}>{filterCategory === "basic" ? "Show artistic styles" : "Show basic presets"}</button></div>
               <div className="global-filter-options" role="listbox" aria-label="Global photostrip filter">
@@ -451,6 +456,7 @@ export default function CaptureWorkspace({ sessionId, checkoutKey, freeSessionId
           {/* Interim Gallery before strip is composed */}
           {!hasStrip && (
             <GalleryResults
+              compactEmpty
               sessionId={sessionId}
               gallery={data}
               credential={checkoutKey}
@@ -494,6 +500,7 @@ export default function CaptureWorkspace({ sessionId, checkoutKey, freeSessionId
                   ) : stripImage.url ? (
                     <img
                       src={stripImage.url}
+                      referrerPolicy="no-referrer"
                       alt="Your composed racebooth photostrip"
                       className="rb-strip-preview-img"
                     />
@@ -619,12 +626,12 @@ export default function CaptureWorkspace({ sessionId, checkoutKey, freeSessionId
               </div>
 
               {/* AREA 3: Email Delivery Card (Desktop Right Column Bottom, directly below QR) */}
-              <div className="rb-area-email rb-card">
+              {freeSessionId && emailDeliveryEnabled && <div className="rb-area-email rb-card">
                 <EmailDelivery
                   freeSessionId={freeSessionId}
                   sessionKey={checkoutKey}
                 />
-              </div>
+              </div>}
 
               {/* AREA 4: Individual Photos Section (Desktop Left Column Bottom) */}
               <div className="rb-area-photos rb-card">

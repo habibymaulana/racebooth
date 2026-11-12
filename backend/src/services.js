@@ -1,13 +1,13 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { transaction } from './db.js';
 import { fail } from './errors.js';
 import { issueToken, dispatchPaymentSimulator } from './n8n.js';
 import { verifySessionAccess } from './photos.js';
 
 const transactionSelect = `SELECT t.*,
-  COALESCE(r.package_snapshot->>'name', pcs.package_snapshot->>'name', p.name) AS package_name,
-  i.state AS token_status, s.token_expires_at, s.id AS session_id,
-  pcs.checkout_key, pcs.simulation_scenario, pcs.simulation_state,
+  COALESCE(t.package_snapshot->>'name', r.package_snapshot->>'name', pcs.package_snapshot->>'name', p.name) AS package_name,
+  i.state AS token_status, s.status AS session_status, s.photo_limit, s.token_expires_at, s.id AS session_id,
+  pcs.id AS public_checkout_id, pcs.checkout_key, pcs.simulation_scenario, pcs.simulation_state,
   (t.operator_id = '00000000-0000-4000-8000-000000000001') AS is_visitor
   FROM payment_transactions t
   JOIN photo_packages p ON p.id=t.package_id
@@ -51,8 +51,8 @@ export async function createTransaction(pool, operatorId, body) {
     const result = await db.query('SELECT * FROM photo_packages WHERE id=$1 FOR UPDATE', [body.packageId]);
     if (!result.rowCount || !result.rows[0].is_active) fail(409, 'PACKAGE_UNAVAILABLE', 'Choose an active package.');
     const p = result.rows[0];
-    const created = await db.query(`INSERT INTO payment_transactions(package_id,operator_id,amount_idr,payment_method,payment_status,is_simulated)
-      VALUES($1,$2,$3,'qris','pending',TRUE) RETURNING id`, [p.id, operatorId, p.price_idr]);
+    const created = await db.query(`INSERT INTO payment_transactions(package_id,operator_id,amount_idr,payment_method,payment_status,is_simulated,package_snapshot)
+      VALUES($1,$2,$3,'qris','pending',TRUE,$4) RETURNING id`, [p.id, operatorId, p.price_idr, JSON.stringify(p)]);
     const id = created.rows[0].id;
     await db.query('INSERT INTO operator_transaction_requests(transaction_id,operator_id,request_key,package_id,package_snapshot) VALUES($1,$2,$3,$4,$5)', [id, operatorId, body.idempotencyKey, p.id, JSON.stringify(p)]);
     return { transaction: await getTransaction(db, id, operatorId), replayed: false };
@@ -62,7 +62,89 @@ export async function createTransaction(pool, operatorId, body) {
 // ---------------- Public Visitor Services ----------------
 
 export async function getPublicPackages(db) {
-  return (await db.query('SELECT id, name, price_idr, photo_limit, session_duration_minutes, is_active FROM photo_packages WHERE is_active = TRUE ORDER BY price_idr ASC')).rows;
+  return (await db.query(`SELECT id,name,price_idr,description,benefits,photo_limit,session_duration_minutes,is_active,display_order
+    FROM photo_packages WHERE is_active=TRUE AND photo_limit=4 ORDER BY display_order ASC,created_at ASC`)).rows;
+}
+
+export async function createManagedPackage(pool, body, durationMinutes = 120) {
+  const result = await pool.query(`INSERT INTO photo_packages(name,price_idr,description,benefits,photo_limit,session_duration_minutes,is_active,display_order)
+    VALUES($1,$2,$3,$4::jsonb,4,$5,$6,$7) RETURNING *`,
+  [body.name, body.price_idr, body.description, JSON.stringify(body.benefits), durationMinutes, body.is_active, body.display_order]);
+  return result.rows[0];
+}
+
+export async function createAutomaticSimulatedCheckout(pool, config, body, clientIp = '127.0.0.1', requestId = randomUUID()) {
+  return transaction(pool, async db => {
+    const serviceUserId = config.SERVICE_USER_ID || '00000000-0000-4000-8000-000000000001';
+    await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`visitor_checkout:${body.idempotencyKey}`]);
+    const previous = await db.query(`SELECT transaction_id,package_id FROM operator_transaction_requests
+      WHERE operator_id=$1 AND request_key=$2`, [serviceUserId, body.idempotencyKey]);
+    if (previous.rowCount) {
+      if (previous.rows[0].package_id !== body.packageId) fail(409, 'IDEMPOTENCY_CONFLICT', 'This request key was already used for another package.');
+      const tx = await getTransaction(db, previous.rows[0].transaction_id);
+      if (tx.payment_status !== 'paid' || !tx.is_simulated || !tx.session_id || !tx.checkout_key) {
+        fail(409, 'CHECKOUT_RECONCILIATION_REQUIRED', 'This checkout already exists but is not complete. Contact the booth administrator.');
+      }
+      return checkoutResult(tx, true);
+    }
+
+    const selected = await db.query('SELECT * FROM photo_packages WHERE id=$1 AND is_active=TRUE AND photo_limit=4 FOR UPDATE', [body.packageId]);
+    if (!selected.rowCount) fail(409, 'PACKAGE_UNAVAILABLE', 'Choose an active four-photo package.');
+    const pkg = selected.rows[0];
+    const packageSnapshot = {
+      id: pkg.id, name: pkg.name, price_idr: Number(pkg.price_idr), description: pkg.description || '',
+      benefits: pkg.benefits || [], photo_limit: 4, session_duration_minutes: pkg.session_duration_minutes
+    };
+    const checkoutKey = randomBytes(32).toString('hex');
+    const paymentReference = `RB-SIM-${randomUUID().toUpperCase()}`;
+    const transactionRow = await db.query(`INSERT INTO payment_transactions
+      (package_id,operator_id,amount_idr,currency_id,payment_reference,payment_method,payment_status,is_simulated,package_snapshot)
+      VALUES($1,$2,$3,'IDR',$4,'simulation','pending',TRUE,$5::jsonb) RETURNING id,created_at`,
+    [pkg.id, serviceUserId, pkg.price_idr, paymentReference, JSON.stringify(packageSnapshot)]);
+    const transactionId = transactionRow.rows[0].id;
+    const checkout = await db.query(`INSERT INTO public_checkout_sessions
+      (transaction_id,checkout_key,package_id,package_snapshot,client_ip,simulation_scenario,simulation_state,flow_type,frame_design)
+      VALUES($1,$2,$3,$4::jsonb,$5,'success','completed','visitor',$6) RETURNING id,created_at`,
+    [transactionId, checkoutKey, pkg.id, JSON.stringify(packageSnapshot), clientIp, body.frameDesign]);
+
+    // Automatic success is one database transaction. No browser assertion, n8n callback,
+    // background timeout, or external payment service can authorize this record.
+    await db.query("UPDATE payment_transactions SET payment_status='paid',paid_at=NOW() WHERE id=$1", [transactionId]);
+    const expiresAt = new Date(Date.now() + Number(pkg.session_duration_minutes) * 60000);
+    const session = await db.query(`INSERT INTO photobooth_sessions
+      (transaction_id,operator_id,package_id,idempotency_key,access_token_hash,photo_limit,status,token_expires_at)
+      VALUES($1,$2,$3,$4,$5,4,'active',$6) RETURNING id,status,photo_limit,token_expires_at`,
+    [transactionId, serviceUserId, pkg.id, randomBytes(32).toString('hex'), createHashHex(checkoutKey), expiresAt]);
+    await db.query(`INSERT INTO operator_transaction_requests(transaction_id,operator_id,request_key,package_id,package_snapshot)
+      VALUES($1,$2,$3,$4,$5::jsonb)`,
+    [transactionId, serviceUserId, body.idempotencyKey, pkg.id, JSON.stringify(packageSnapshot)]);
+    await db.query(`INSERT INTO payment_simulation_events(transaction_id,event_type,scenario,status,signature_verified,payload)
+      VALUES($1,'payment.simulation.automatically_succeeded','success','paid',FALSE,$2::jsonb)`,
+    [transactionId, JSON.stringify({ source: 'internal-simulator', payment_reference: paymentReference })]);
+    await db.query(`INSERT INTO operator_payment_audit(transaction_id,actor_id,action,previous_status,new_status,is_simulated,request_id,actor_ip)
+      VALUES($1,$2,'automatic_simulated_payment','pending','paid',TRUE,$3,$4)`,
+    [transactionId, serviceUserId, requestId, clientIp]);
+
+    const tx = await getTransaction(db, transactionId);
+    return checkoutResult(tx, false, checkout.rows[0].id);
+  });
+}
+
+function createHashHex(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function checkoutResult(tx, replayed, checkoutId) {
+  return {
+    checkout: { id: checkoutId || tx.public_checkout_id, transactionId: tx.id, paymentReference: tx.payment_reference,
+      status: 'completed', currency: tx.currency_id, amountIdr: Number(tx.amount_idr), isSimulated: true },
+    transaction: { id: tx.id, payment_status: tx.payment_status, payment_method: tx.payment_method,
+      amount_idr: Number(tx.amount_idr), currency_id: tx.currency_id, payment_reference: tx.payment_reference, is_simulated: true },
+    session: { id: tx.session_id, status: tx.session_status || 'active', photoLimit: Number(tx.photo_limit || 4), tokenExpiresAt: tx.token_expires_at },
+    sessionKey: tx.checkout_key,
+    package: tx.package_snapshot,
+    replayed
+  };
 }
 
 export async function createPublicTransaction(pool, config, body, clientIp = '127.0.0.1') {
@@ -270,13 +352,10 @@ export async function updatePackage(pool, id, body) {
     const existing = await db.query('SELECT * FROM photo_packages WHERE id=$1 FOR UPDATE', [id]);
     if (!existing.rowCount) fail(404, 'PACKAGE_NOT_FOUND', 'Package not found.');
     const p = existing.rows[0];
-    const termsChanged = ['price_idr', 'photo_limit', 'session_duration_minutes'].some(k => body[k] !== undefined && String(body[k]) !== String(p[k]));
-    if (termsChanged) {
-      const used = await db.query('SELECT 1 FROM payment_transactions WHERE package_id=$1 LIMIT 1', [id]);
-      if (used.rowCount) fail(409, 'PACKAGE_TERMS_LOCKED', 'This package has transactions. Create a new package to change its price or session limits.');
-    }
     const next = { ...p, ...body };
-    return (await db.query(`UPDATE photo_packages SET name=$2,price_idr=$3,photo_limit=$4,session_duration_minutes=$5,is_active=$6 WHERE id=$1 RETURNING *`, [id, next.name, next.price_idr, next.photo_limit, next.session_duration_minutes, next.is_active])).rows[0];
+    return (await db.query(`UPDATE photo_packages SET name=$2,price_idr=$3,photo_limit=$4,session_duration_minutes=$5,
+      is_active=$6,description=$7,benefits=$8::jsonb,display_order=$9,updated_at=NOW() WHERE id=$1 RETURNING *`,
+    [id,next.name,next.price_idr,next.photo_limit,next.session_duration_minutes,next.is_active,next.description || '',JSON.stringify(next.benefits || []),next.display_order || 0])).rows[0];
   });
 }
 
