@@ -8,7 +8,7 @@ import { hashPassword, tokenHash, signPayload } from '../../src/security.js';
 import {
   createTransaction, confirmSimulation, dashboard, updatePackage, getTransaction,
   createPublicTransaction, getPublicTransaction, handlePaymentNotification,
-  getPublicSession
+  getPublicSession, createManagedPackage
 } from '../../src/services.js';
 import { issueToken, signWorkflowJwt } from '../../src/n8n.js';
 import jwt from 'jsonwebtoken';
@@ -75,8 +75,14 @@ test('audit insertion failure rolls back the payment confirmation atomically', a
   const verified = await getTransaction(pool, t.id, operator.id);
   assert.equal(verified.payment_status, 'pending'); assert.equal(verified.paid_at, null);
 });
-test('package terms stay fixed after a sale and inactive packages cannot be purchased', async () => {
-  await assert.rejects(updatePackage(pool, pkg.id, { price_idr: 1 }), e => e.code === 'PACKAGE_TERMS_LOCKED');
+test('package price edits preserve the amount and package snapshot on a prior transaction', async () => {
+  const previous = await create();
+  await updatePackage(pool, pkg.id, { name: 'Updated integration fixture', price_idr: 1 });
+  const saved = await getTransaction(pool, previous.id, operator.id);
+  assert.equal(saved.package_name, 'Integration fixture');
+  assert.equal(Number(saved.amount_idr), 75000);
+});
+test('inactive packages cannot be purchased', async () => {
   await updatePackage(pool, pkg.id, { is_active: false });
   await assert.rejects(create(), e => e.code === 'PACKAGE_UNAVAILABLE');
   await updatePackage(pool, pkg.id, { is_active: true });
@@ -145,10 +151,72 @@ test('HTTP login through PostgreSQL session store completes the authenticated si
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
+test('real PostgreSQL admin package API supports protected create, edit and deactivate operations', async () => {
+  const adminEmail = `${randomUUID()}@example.invalid`;
+  await pool.query("INSERT INTO app_users(full_name,email,password_hash,role) VALUES('Package Admin',$1,$2,'admin')",
+    [adminEmail, await hashPassword(operatorPassword)]);
+  const server = await new Promise(resolve => { const s = createApp({ pool, config }).listen(0, '127.0.0.1', () => resolve(s)); });
+  const connect = async email => {
+    let cookie = '', csrf = '';
+    const request = async (path, method = 'GET', body) => {
+      const result = await fetch(`http://127.0.0.1:${server.address().port}/api${path}`, {
+        method,
+        headers: { ...(cookie ? { Cookie: cookie } : {}), ...(csrf ? { 'X-CSRF-Token': csrf } : {}), 'Content-Type': 'application/json' },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+      const setCookie = result.headers.getSetCookie()[0];
+      if (setCookie) cookie = setCookie.split(';')[0];
+      const data = await result.json();
+      if (path === '/auth/csrf' && result.ok) csrf = data.csrfToken;
+      if (path === '/auth/login' && result.ok) csrf = data.csrfToken;
+      return { status: result.status, data };
+    };
+    const initial = await request('/auth/csrf');
+    assert.equal(initial.status, 200);
+    const login = await request('/auth/login', 'POST', { email, password: operatorPassword });
+    assert.equal(login.status, 200);
+    return request;
+  };
+  try {
+    const operatorRequest = await connect(operator.email);
+    assert.equal((await operatorRequest('/admin/packages')).status, 403);
+    assert.equal((await operatorRequest('/admin/packages', 'POST', {
+      name: 'Unauthorized', price_idr: 1, description: '', benefits: [], is_active: true, display_order: 0,
+    })).status, 403);
+
+    const adminRequest = await connect(adminEmail);
+    assert.equal((await adminRequest('/admin/packages')).status, 200);
+    const created = await adminRequest('/admin/packages', 'POST', {
+      name: 'Managed integration package', price_idr: 45000, description: 'Four photos.',
+      benefits: ['Private gallery'], is_active: true, display_order: 8,
+    });
+    assert.equal(created.status, 201);
+    const id = created.data.package.id;
+    const updated = await adminRequest(`/admin/packages/${id}`, 'PATCH', {
+      name: 'Updated managed package', price_idr: 52000, benefits: ['Four photos', 'Private gallery'], display_order: 3,
+    });
+    assert.equal(updated.status, 200);
+    assert.equal(updated.data.package.name, 'Updated managed package');
+    assert.equal(Number(updated.data.package.price_idr), 52000);
+    assert.deepEqual(updated.data.package.benefits, ['Four photos', 'Private gallery']);
+    assert.equal((await adminRequest('/public/packages')).data.packages.some(item => item.id === id), true);
+
+    assert.equal((await adminRequest(`/admin/packages/${id}`, 'PATCH', { is_active: false })).status, 200);
+    assert.equal((await adminRequest('/public/packages')).data.packages.some(item => item.id === id), false);
+    const stored = await pool.query('SELECT is_active,price_idr,photo_limit FROM photo_packages WHERE id=$1', [id]);
+    assert.deepEqual(stored.rows[0], { is_active: false, price_idr: '52000', photo_limit: 4 });
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
 // ---------------- NEW AUTOMATED PAYMENT SIMULATION & PUBLIC INTEGRATION TESTS ----------------
 
-test('public visitor automated flow: package select -> simulated checkout -> auto payment notification -> auto WF-01 token -> public session access without operator', async () => {
-  const app = createApp({ pool, config, tokenIssuer: (p, c, actor, id) => issueToken(p, c, actor, id, fakeSuccessfulWorkflow) });
+test('public visitor selects a database package and receives an automatically paid, active four-photo session', async () => {
+  const visitorPackage = await createManagedPackage(pool, {
+    name: 'Visitor four-photo session', price_idr: 84000, description: 'A visitor package.',
+    benefits: ['Private gallery'], is_active: true, display_order: 0,
+  }, 30);
+  let tokenIssuerCalls = 0;
+  const app = createApp({ pool, config, tokenIssuer: async () => { tokenIssuerCalls++; throw new Error('Visitor checkout must not call an external workflow.'); } });
   const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   try {
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -157,72 +225,72 @@ test('public visitor automated flow: package select -> simulated checkout -> aut
       return { status: result.status, data: await result.json() };
     };
 
-    // 1. Visitor browses packages publicly without auth
+    // The legacy six-photo fixture stays out of the four-photo visitor catalogue.
     const pkgsRes = await req('/public/packages');
     assert.equal(pkgsRes.status, 200);
-    assert.ok(pkgsRes.data.packages.length > 0);
+    assert.ok(pkgsRes.data.packages.some(item => item.id === visitorPackage.id));
+    assert.ok(pkgsRes.data.packages.every(item => item.photo_limit === 4));
+    assert.ok(!pkgsRes.data.packages.some(item => item.id === pkg.id));
 
-    // 2. Visitor selects package and creates transaction
-    const createRes = await req('/public/transactions', 'POST', { packageId: pkg.id });
+    // The browser supplies a package ID and UUID idempotency key, never a trusted price or status.
+    const idempotencyKey = randomUUID();
+    const checkoutBody = { packageId: visitorPackage.id, idempotencyKey, frameDesign: 'retro-checker' };
+    const createRes = await req('/public/checkouts', 'POST', checkoutBody);
     assert.equal(createRes.status, 201);
-    const txId = createRes.data.transaction.id;
-    const checkoutKey = createRes.data.checkoutKey;
-    assert.ok(txId);
-    assert.ok(checkoutKey);
-    assert.equal(createRes.data.transaction.payment_status, 'pending');
+    const { transaction, checkout, session, sessionKey } = createRes.data;
+    const txId = transaction.id;
+    assert.ok(txId); assert.ok(checkout.id); assert.ok(session.id); assert.ok(sessionKey);
+    assert.equal(transaction.payment_status, 'paid');
     assert.equal(createRes.data.transaction.is_simulated, true);
+    assert.equal(createRes.data.transaction.payment_method, 'simulation');
+    assert.equal(Number(createRes.data.transaction.amount_idr), 84000);
+    assert.equal(session.status, 'active');
+    assert.equal(session.photoLimit, 4);
+    assert.match(checkout.paymentReference, /^RB-SIM-/);
 
-    // 3. Visitor views public transaction with checkout key
-    const getRes = await req(`/public/transactions/${txId}?checkoutKey=${checkoutKey}`);
-    assert.equal(getRes.status, 200);
-    assert.equal(getRes.data.transaction.id, txId);
+    // A retry with the same idempotency key returns the same payment and session IDs.
+    const replay = await req('/public/checkouts', 'POST', checkoutBody);
+    assert.equal(replay.status, 200);
+    assert.equal(replay.data.transaction.id, txId);
+    assert.equal(replay.data.checkout.id, checkout.id);
+    assert.equal(replay.data.session.id, session.id);
 
-    // 4. Verification that unauthorized visitors without checkoutKey cannot read transaction
-    const deniedRes = await req(`/public/transactions/${txId}?checkoutKey=invalid-key`);
-    assert.equal(deniedRes.status, 403);
+    const conflict = await req('/public/checkouts', 'POST', { ...checkoutBody, packageId: pkg.id });
+    assert.equal(conflict.status, 409);
 
-    // 5. Automated Payment Simulator webhook callback arrives (signed by simulator)
-    const notificationPayload = {
-      transaction_id: txId,
-      event: 'payment.simulated.success',
-      status: 'paid',
-      scenario: 'success',
-      amount_idr: Number(pkg.price_idr),
-      simulated_at: new Date().toISOString()
-    };
-    const signature = signPayload(JSON.stringify(notificationPayload), config.paymentSimulatorSecret);
-
-    const webhookRes = await req('/webhooks/payment-notification', 'POST', notificationPayload, {
-      'X-Simulation-Signature': signature
-    });
-    assert.equal(webhookRes.status, 200);
-    assert.equal(webhookRes.data.ok, true);
-    assert.equal(webhookRes.data.status, 'paid');
-
-    // 6. Verify PostgreSQL state: payment is paid and session was automatically created
+    // Verify the linked PostgreSQL records, package snapshot, and completed audit state.
     const verifiedTx = await pool.query('SELECT * FROM payment_transactions WHERE id = $1', [txId]);
     assert.equal(verifiedTx.rows[0].payment_status, 'paid');
     assert.equal(verifiedTx.rows[0].is_simulated, true);
+    assert.equal(verifiedTx.rows[0].payment_method, 'simulation');
+    assert.equal(Number(verifiedTx.rows[0].amount_idr), 84000);
     assert.ok(verifiedTx.rows[0].paid_at);
-
-    // Automatic token issuance created photobooth_sessions row!
     const sessionRes = await pool.query('SELECT * FROM photobooth_sessions WHERE transaction_id = $1', [txId]);
     assert.equal(sessionRes.rowCount, 1);
     const sessionId = sessionRes.rows[0].id;
-    assert.equal(sessionRes.rows[0].package_id, pkg.id);
+    assert.equal(sessionId, session.id);
+    assert.equal(sessionRes.rows[0].package_id, visitorPackage.id);
+    assert.equal(sessionRes.rows[0].status, 'active');
+    assert.equal(sessionRes.rows[0].photo_limit, 4);
+    assert.equal(tokenIssuerCalls, 0);
 
-    // 7. Public visitor polls /public/transactions/:id and sees token issued
-    const finalTxRes = await req(`/public/transactions/${txId}?checkoutKey=${checkoutKey}`);
-    assert.equal(finalTxRes.status, 200);
-    assert.equal(finalTxRes.data.transaction.payment_status, 'paid');
-    assert.equal(finalTxRes.data.transaction.token_status, 'issued');
+    const checkoutLink = await pool.query(`SELECT pcs.id AS checkout_id,pcs.package_id,pcs.flow_type,pcs.frame_design,
+      t.package_snapshot,t.currency_id,t.payment_reference FROM public_checkout_sessions pcs
+      JOIN payment_transactions t ON t.id=pcs.transaction_id WHERE pcs.transaction_id=$1`, [txId]);
+    assert.equal(checkoutLink.rows[0].checkout_id, checkout.id);
+    assert.equal(checkoutLink.rows[0].package_id, visitorPackage.id);
+    assert.equal(checkoutLink.rows[0].flow_type, 'visitor');
+    assert.equal(checkoutLink.rows[0].frame_design, 'retro-checker');
+    assert.equal(checkoutLink.rows[0].package_snapshot.name, visitorPackage.name);
+    assert.equal(checkoutLink.rows[0].currency_id, 'IDR');
+    assert.equal(checkoutLink.rows[0].payment_reference, checkout.paymentReference);
+    assert.equal((await pool.query('SELECT COUNT(*)::INT AS count FROM payment_transactions WHERE id=$1', [txId])).rows[0].count, 1);
 
-    // 8. Public visitor accesses photobooth session view
-    const publicSessionRes = await req(`/public/sessions/${sessionId}?key=${checkoutKey}`);
+    const publicSessionRes = await req(`/public/sessions/${sessionId}?key=${sessionKey}`);
     assert.equal(publicSessionRes.status, 200);
     assert.equal(publicSessionRes.data.session.id, sessionId);
-    assert.equal(publicSessionRes.data.session.package_name, pkg.name);
-    assert.equal(publicSessionRes.data.session.photo_limit, pkg.photo_limit);
+    assert.equal(publicSessionRes.data.session.package_name, visitorPackage.name);
+    assert.equal(publicSessionRes.data.session.photo_limit, 4);
   } finally {
     await new Promise(resolve => server.close(resolve));
   }

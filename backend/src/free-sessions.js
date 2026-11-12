@@ -40,8 +40,10 @@ export async function createFreeSession(pool, config, { frameDesign = 'blueberry
 
     // Zero-value provenance preserves the existing session foreign keys and all
     // historical transactions. No gateway or simulated payment is invoked.
-    const tx = await db.query(`INSERT INTO payment_transactions(package_id,operator_id,amount_idr,payment_method,payment_status,is_simulated,paid_at)
-      VALUES($1,$2,0,'free','paid',FALSE,NOW()) RETURNING id`, [packageId, SERVICE_USER_ID]);
+    const tx = await db.query(`INSERT INTO payment_transactions(package_id,operator_id,amount_idr,payment_method,payment_status,is_simulated,paid_at,package_snapshot)
+      SELECT p.id,$2,0,'free','paid',FALSE,NOW(),jsonb_build_object('id',p.id,'name',p.name,'price_idr',0,'description',p.description,
+        'benefits',p.benefits,'photo_limit',4,'session_duration_minutes',p.session_duration_minutes)
+      FROM photo_packages p WHERE p.id=$1 RETURNING id`, [packageId, SERVICE_USER_ID]);
     const transactionId = tx.rows[0].id;
     const session = await db.query(`INSERT INTO photobooth_sessions(transaction_id,operator_id,package_id,idempotency_key,access_token_hash,photo_limit,status,token_expires_at)
       VALUES($1,$2,$3,$4,$5,4,'active',$6) RETURNING id`,

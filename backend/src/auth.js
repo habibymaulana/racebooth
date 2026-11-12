@@ -29,10 +29,15 @@ export function requireOperator(pool, config) {
     const result = await pool.query('SELECT id,full_name,email,role,is_active FROM app_users WHERE id=$1', [req.session.userId]);
     const user = result.rows[0];
     if (!user || !user.is_active) { await destroySession(req); fail(401, 'AUTH_REQUIRED', 'Log in to continue.'); }
-    if (user.role !== 'operator') fail(403, 'OPERATOR_REQUIRED', 'An active operator account is required.');
+    if (!['operator', 'supervisor', 'admin'].includes(user.role)) fail(403, 'OPERATOR_REQUIRED', 'An active workspace account is required.');
     req.user = { id: user.id, fullName: user.full_name, email: user.email, role: user.role };
     next();
   };
+}
+
+export function requirePackageAdmin(req, res, next) {
+  if (req.user?.role !== 'admin') fail(403, 'PACKAGE_ADMIN_REQUIRED', 'An authorized administrator is required to manage packages.');
+  next();
 }
 
 // Dummy scrypt computation keeps unknown-account authentication on the same slow path.
@@ -49,7 +54,7 @@ export async function login(pool, req, body) {
   const user = result.rowCount === 1 ? result.rows[0] : undefined;
   dummyHash ??= hashPassword(randomBytes(32).toString('hex'));
   const valid = await verifyPassword(body.password, user?.password_hash || await dummyHash);
-  if (!valid || !user?.is_active || user.role !== 'operator') fail(401, 'INVALID_CREDENTIALS', 'Invalid operator email or password.');
+  if (!valid || !user?.is_active || !['operator', 'supervisor', 'admin'].includes(user.role)) fail(401, 'INVALID_CREDENTIALS', 'Invalid operator email or password.');
   await regenerateSession(req);
   req.session.userId = user.id;
   req.session.authenticatedAt = Date.now();

@@ -2,6 +2,10 @@
 
 Audit date: 2026-11-09 (Asia/Jakarta). This is a readiness plan, not a deployment. The named public GitHub repository was verified before local Git metadata was prepared; no hosting project, domain, database copy, n8n export, or billing configuration was created or changed.
 
+> **Historical target:** The Stage 6 and Stage 7A plan below uses Render for the API and Cloudflare R2 for photos. Stage 7C supersedes that target with Vercel Services, Neon, and private Vercel Blob. The local Docker, PostgreSQL, R2, n8n, and Hermes setup remains preserved. Use [the Stage 7C deployment plan](vercel-deployment.md) for the current architecture and next steps.
+
+> **Stage 7E update (2026-11-12):** This audit predates database-managed package checkout and automatic internal payment simulation. Its statements that production simulated checkout is disabled and Racebooth is free-only are historical. Current package permissions, additive schema, payment/session linkage, and Vercel behavior are documented in [the Stage 7E package and checkout notes](stage-7e-package-checkout.md).
+
 ## Stage 6 verification
 
 - The target [`habibymaulana/racebooth`](https://github.com/habibymaulana/racebooth) is reachable and currently empty: GitHub shows no files and `git ls-remote` returned no refs. The workspace had no `.git` metadata before this stage.

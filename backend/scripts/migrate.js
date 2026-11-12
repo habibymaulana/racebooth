@@ -3,7 +3,12 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../src/config.js';
 import { createPool, transaction } from '../src/db.js';
 
-const pool = createPool(loadConfig());
+// Use Neon’s direct endpoint for one-off schema changes when it is available;
+// request handling should use the pooled DATABASE_URL instead.
+const migrationEnv = process.env.DATABASE_URL_UNPOOLED
+  ? { ...process.env, DATABASE_URL: process.env.DATABASE_URL_UNPOOLED }
+  : process.env;
+const pool = createPool(loadConfig(migrationEnv));
 const migrations = [
   { name: '02-phase1-support', path: '../../database/migrations/02-phase1-support.sql' },
   { name: '03-automated-payment-and-public', path: '../../database/migrations/03-automated-payment-and-public.sql' },
@@ -15,7 +20,9 @@ const migrations = [
   { name: '09-expand-filters', path: '../../database/migrations/09-expand-filters.sql' },
   { name: '10-photostrip-editing', path: '../../database/migrations/10-photostrip-editing.sql' },
   { name: '11-qc-diagnoses', path: '../../database/migrations/11-qc-diagnoses.sql' },
-  { name: '12-simulated-payment-tracking', path: '../../database/migrations/12-simulated-payment-tracking.sql' }
+  { name: '12-simulated-payment-tracking', path: '../../database/migrations/12-simulated-payment-tracking.sql' },
+  { name: '13-serverless-rate-limits', path: '../../database/migrations/13-serverless-rate-limits.sql' },
+  { name: '14-admin-packages-auto-simulation', path: '../../database/migrations/14-admin-packages-auto-simulation.sql' }
 ];
 
 try {

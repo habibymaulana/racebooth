@@ -15,6 +15,12 @@ import GuestGallery from "./Gallery";
 import { useGuestCheckoutKey } from "./guestAccess";
 import HomePage from "./HomePage";
 import QualityControl from "./QualityControl";
+import PackageManagement from "./PackageManagement.jsx";
+import {
+  AlertTriangle, ArrowRight, Camera, Check, ChevronRight, Clock, Copy,
+  ExternalLink, LayoutGrid, KeyRound, LogOut, Menu, Package, Pencil, Plus,
+  ReceiptText, RefreshCw, Search, Settings, ShieldCheck, WalletCards, X,
+} from "lucide-react";
 
 const Auth = createContext(null);
 const money = (value) =>
@@ -34,120 +40,16 @@ const date = (value) =>
 const shortId = (value) => value?.slice(0, 8).toUpperCase();
 
 function Icon({ name, size = 20, ...props }) {
-  const paths = {
-    camera: (
-      <>
-        <path d="M14 5l1.5 2H20v12H4V7h4.5L10 5z" />
-        <circle cx="12" cy="13" r="3.2" />
-      </>
-    ),
-    grid: (
-      <>
-        <rect x="3" y="3" width="7" height="7" rx="1.5" />
-        <rect x="14" y="3" width="7" height="7" rx="1.5" />
-        <rect x="3" y="14" width="7" height="7" rx="1.5" />
-        <rect x="14" y="14" width="7" height="7" rx="1.5" />
-      </>
-    ),
-    receipt: (
-      <>
-        <path d="M6 3h12v18l-3-2-3 2-3-2-3 2z" />
-        <path d="M9 8h6M9 12h6" />
-      </>
-    ),
-    box: (
-      <>
-        <path d="M12 3l9 5-9 5-9-5zM3 8v9l9 5 9-5V8M12 13v9M7.5 5.5l9 5" />
-      </>
-    ),
-    plus: <path d="M12 5v14M5 12h14" />,
-    arrow: <path d="M5 12h14m-5-5 5 5-5 5" />,
-    chevron: <path d="m9 5 7 7-7 7" />,
-    logout: (
-      <>
-        <path d="M9 4H4v16h5M9 12h12m-5-5 5 5-5 5" />
-      </>
-    ),
-    check: <path d="m5 12 4 4L19 6" />,
-    clock: (
-      <>
-        <circle cx="12" cy="12" r="9" />
-        <path d="M12 7v5l3 2" />
-      </>
-    ),
-    key: (
-      <>
-        <circle cx="8" cy="9" r="5" />
-        <path d="m12 13 8 8m-4-4 3-3m-6 0 3-3" />
-      </>
-    ),
-    wallet: (
-      <>
-        <rect x="3" y="6" width="18" height="14" rx="3" />
-        <path d="m5 6 12-3v3M16 11h5v5h-5a2.5 2.5 0 0 1 0-5z" />
-      </>
-    ),
-    alert: (
-      <>
-        <path d="m12 3 10 18H2zM12 9v5" />
-        <path d="M12 17h.01" />
-      </>
-    ),
-    copy: (
-      <>
-        <rect x="8" y="8" width="12" height="13" rx="2" />
-        <path d="M15 8V3H3v13h5" />
-      </>
-    ),
-    edit: (
-      <>
-        <path d="m16 3 5 5-12 12-6 1 1-6zM13 6l5 5" />
-      </>
-    ),
-    refresh: (
-      <>
-        <path d="M20 7v5h-5M4 17v-5h5" />
-        <path d="M5 8a8 8 0 0 1 13-3l2 3M4 16l2 3a8 8 0 0 0 13-3" />
-      </>
-    ),
-    close: <path d="m6 6 12 12M18 6 6 18" />,
-    shield: (
-      <>
-        <path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6z" />
-        <path d="m8 12 3 3 5-6" />
-      </>
-    ),
-    menu: <path d="M4 6h16M4 12h16M4 18h16" />,
-    search: (
-      <>
-        <circle cx="10" cy="10" r="6" />
-        <path d="m15 15 6 6" />
-      </>
-    ),
-    external: (
-      <>
-        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-        <polyline points="15 3 21 3 21 9" />
-        <line x1="10" y1="14" x2="21" y2="3" />
-      </>
-    ),
+  const icons = {
+    alert: AlertTriangle, arrow: ArrowRight, camera: Camera, check: Check,
+    chevron: ChevronRight, clock: Clock, close: X, copy: Copy, edit: Pencil,
+    external: ExternalLink, grid: LayoutGrid, key: KeyRound, logout: LogOut,
+    menu: Menu, plus: Plus, receipt: ReceiptText, refresh: RefreshCw,
+    search: Search, settings: Settings, shield: ShieldCheck, wallet: WalletCards,
+    box: Package,
   };
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      {...props}
-    >
-      {paths[name] || paths.camera}
-    </svg>
-  );
+  const Glyph = icons[name] || Camera;
+  return <Glyph size={size} strokeWidth={1.7} aria-hidden="true" {...props} />;
 }
 
 function Spinner({ label = "Loading workspace…" }) {
@@ -246,9 +148,9 @@ export default function App() {
   if (!isOperator) {
     return (
       <Routes>
-        <Route path="/" element={<PublicLayout><HomePage /></PublicLayout>} />
-        <Route path="/racebooth" element={<PublicLayout><HomePage /></PublicLayout>} />
-        <Route path="/photobooth" element={<PublicLayout><HomePage /></PublicLayout>} />
+        <Route path="/" element={<PublicLayout landing><HomePage /></PublicLayout>} />
+        <Route path="/racebooth" element={<PublicLayout landing><HomePage /></PublicLayout>} />
+        <Route path="/photobooth" element={<PublicLayout landing><HomePage /></PublicLayout>} />
         <Route path="/photobooth/session/:id" element={<PublicSession />} />
         <Route path="/racebooth/session/:id" element={<PublicSession />} />
         <Route path="/photobooth/:id" element={<PublicSession />} />
@@ -323,7 +225,7 @@ function OperatorApp() {
     <Auth.Provider value={{ user, setUser }}>
       {!user ? (
         <Login />
-      ) : user.role !== "operator" ? (
+      ) : !["operator", "supervisor", "admin"].includes(user.role) ? (
         <AccessDenied />
       ) : (
         <Shell />
@@ -357,7 +259,7 @@ function PublicFooter() {
         <div className="rb-footer-brand">
           <Link to="/" className="rb-brand">
             <span className="rb-brand-icon" aria-hidden="true">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+              <Camera size={20} strokeWidth={1.7} />
             </span>
             <span className="rb-brand-name">
               racebooth<span className="rb-brand-dot">.</span>
@@ -365,7 +267,7 @@ function PublicFooter() {
           </Link>
           <p className="rb-footer-tagline">Capture the moment. Keep the memory.</p>
           <p className="rb-footer-desc">
-            Free interactive photobooth with 12 original cute frame designs, real camera capture, art photo filters, and instant private gallery sharing.
+            An interactive photobooth with 12 frame designs, camera capture, 14 filters, and private gallery sharing. Try a free session or choose an explicitly simulated package checkout.
           </p>
         </div>
 
@@ -381,9 +283,9 @@ function PublicFooter() {
         <div className="rb-footer-features">
           <h4>Highlights</h4>
           <ul>
-            <li>100% Free · No Account Needed</li>
-            <li>12 Cute Original Frames</li>
-            <li>6 Real Art Photo Filters</li>
+            <li>No account needed</li>
+            <li>12 original frame designs</li>
+            <li>14 photo filters</li>
             <li>Private Expiring Galleries</li>
           </ul>
         </div>
@@ -391,60 +293,30 @@ function PublicFooter() {
 
       <div className="rb-footer-bottom">
         <div className="rb-footer-bottom-inner">
-          <p>© 2026 racebooth. All rights reserved.</p>
-          <p className="rb-footer-note">Real camera capture · Ephemeral session storage</p>
+          <p>Copyright 2026 racebooth. All rights reserved.</p>
+          <p className="rb-footer-note">Real camera capture · Private expiring galleries</p>
         </div>
       </div>
     </footer>
   );
 }
 
-function PublicLayout({ children }) {
+function PublicLayout({ children, landing = false }) {
   return (
-    <div className="public-shell">
-      <header className="public-nav">
+    <div className={`public-shell ${landing ? "public-shell-landing" : ""}`}>
+      {!landing && <header className="public-nav">
         <div className="public-nav-inner">
           <Link to="/" className="rb-brand">
-            <span className="rb-brand-icon" aria-hidden="true">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
-            </span>
-            <span className="rb-brand-name">
-              racebooth<span className="rb-brand-dot">.</span>
-            </span>
+            <span className="rb-brand-icon" aria-hidden="true"><Camera size={20} strokeWidth={1.7} /></span>
+            <span className="rb-brand-name">racebooth<span className="rb-brand-dot">.</span></span>
           </Link>
           <div className="public-nav-actions">
-            <span
-              className="session-pill"
-              style={{
-                margin: 0,
-                padding: "5px 14px",
-                fontSize: "11px",
-                background: "#fdf2f8",
-                color: "#be185d",
-                border: "1px solid #fbcfe8",
-                fontWeight: "700"
-              }}
-            >
-              FREE PHOTOBOOTH
-            </span>
-            <Link
-              to="/operator"
-              style={{
-                fontSize: "12px",
-                color: "#6b5b80",
-                textDecoration: "none",
-                fontWeight: "600",
-                padding: "6px 12px",
-                borderRadius: "8px",
-                background: "#f5f0fb"
-              }}
-            >
-              Operator Dashboard →
-            </Link>
+            <span className="public-session-note">Private session</span>
+            <Link to="/operator" className="public-operator-link">Operator workspace <ArrowRight size={15} aria-hidden="true" /></Link>
           </div>
         </div>
-      </header>
-      <main className="public-content">{children}</main>
+      </header>}
+      <main className={`public-content ${landing ? "public-content-landing" : ""}`}>{children}</main>
       <PublicFooter />
     </div>
   );
@@ -577,8 +449,7 @@ function Login() {
           <div className="login-security">
             <Icon name="shield" size={18} />
             <p>
-              Operator access only. Ask your administrator to provision an
-              account before signing in.
+              Authorized workspace access only. Ask an administrator to provision your account before signing in.
             </p>
           </div>
           <div style={{ marginTop: "16px", textAlign: "center" }}>
@@ -601,8 +472,8 @@ function AccessDenied() {
   return (
     <div className="connection-error">
       <Brand />
-      <h1>Operator access required</h1>
-      <p>This workspace is available to active operators.</p>
+      <h1>Workspace access required</h1>
+      <p>This protected area is available only to authorized workspace accounts.</p>
       <ErrorNotice error={error} />
       <button
         className="button primary"
@@ -635,9 +506,10 @@ function Shell() {
 
   const links = [
     { to: "/operator", label: "Overview", icon: "grid", end: true },
-    { to: "/operator/transactions/new", label: "New transaction", icon: "plus" },
+    ...(user.role === "supervisor" ? [] : [{ to: "/operator/transactions/new", label: "New transaction", icon: "plus" }]),
     { to: "/operator/transactions", label: "Transactions", icon: "receipt", end: true },
     { to: "/operator/packages", label: "Packages", icon: "box" },
+    ...(user.role === "admin" ? [{ to: "/operator/admin/packages", label: "Manage packages", icon: "settings" }] : []),
     { to: "/operator/qc", label: "Quality control", icon: "shield" },
   ];
 
@@ -648,6 +520,8 @@ function Shell() {
         ? "Quality control"
         : location.pathname.startsWith("/operator/packages")
         ? "Packages"
+        : location.pathname.startsWith("/operator/admin/packages")
+          ? "Manage packages"
         : location.pathname.endsWith("/new")
           ? "New transaction"
           : "Transactions";
@@ -706,7 +580,7 @@ function Shell() {
         <div className="sidebar-bottom">
           <div className="sidebar-note">
             <span className="live-dot" />
-            <strong>Free visitor sessions</strong>
+            <strong>Visitor sessions</strong>
             <p>
               Four photos, private galleries,
               <br />
@@ -737,7 +611,7 @@ function Shell() {
           <div className="topbar-right">
             <span className="mode-badge">
               <span />
-              OPERATOR
+              {user.role.toUpperCase()}
             </span>
             <div className="operator">
               <span className="avatar">
@@ -747,7 +621,7 @@ function Shell() {
               </span>
               <div>
                 <strong>{user.fullName || user.full_name || "Operator"}</strong>
-                <small>Operator</small>
+                <small>{user.role === "admin" ? "Administrator" : user.role === "supervisor" ? "Supervisor" : "Operator"}</small>
               </div>
             </div>
             <button
@@ -766,13 +640,14 @@ function Shell() {
           <Routes>
             <Route path="/operator" element={<Overview />} />
             <Route path="/operator/transactions" element={<Transactions />} />
-            <Route path="/operator/transactions/new" element={<NewTransaction />} />
-            <Route
+            <Route path="/operator/transactions/new" element={user.role === "supervisor" ? <AccessDenied /> : <NewTransaction />} />
+                    <Route
               path="/operator/transactions/:id"
               element={<TransactionDetail key={location.pathname} />}
             />
             <Route path="/operator/packages" element={<Packages />} />
-            <Route path="/operator/qc" element={<QualityControl />} />
+            <Route path="/operator/admin/packages" element={user.role === "admin" ? <PackageManagement /> : <AccessDenied />} />
+            <Route path="/operator/qc" element={<QualityControl readOnly={user.role === "supervisor"} />} />
             <Route path="*" element={<Navigate to="/operator" replace />} />
           </Routes>
           <footer className="page-footer">
@@ -892,7 +767,7 @@ function Overview() {
       <PageHeading
         eyebrow="YOUR WORKSPACE, AT A GLANCE"
         title={`Hello, ${firstName}.`}
-        description="Monitor free sessions, photo results, and historical transactions."
+        description="Monitor booth sessions, photo results, and transaction history."
         action={
           <div style={{ display: "flex", gap: "10px" }}>
             <a
@@ -904,10 +779,7 @@ function Overview() {
               <Icon name="external" size={16} />
               Open Public Booth
             </a>
-            <Link className="button primary" to="/operator/transactions/new">
-              <Icon name="plus" size={18} />
-              New transaction
-            </Link>
+            {user.role !== "supervisor" && <Link className="button primary" to="/operator/transactions/new"><Icon name="plus" size={18} /> New transaction</Link>}
           </div>
         }
       />
@@ -927,6 +799,7 @@ function Overview() {
               <Stat icon="clock" label="Unconfirmed emails" value={stats.emailsUnconfirmed ?? "—"} note="Pending or historical unverified delivery" />
               <Stat icon="alert" label="Email failures" value={stats.emailsFailed ?? "—"} note="Recorded failed deliveries" />
               <Stat icon="wallet" label="Historical real revenue" value={money(stats.realRevenueIdr)} note="Free and simulated sessions excluded" />
+              <Stat icon="shield" label="Simulated checkout total" value={money(stats.simulatedRevenueIdr)} note="Test records only · not real revenue" />
             </div>
             <section className="panel free-session-metrics">
               <div className="panel-heading"><div><h2>Recent free sessions</h2><p>Live session and photostrip records.</p></div><Link className="inline-link" to="/operator/qc">Open quality control <Icon name="arrow" size={16} /></Link></div>
@@ -1010,6 +883,7 @@ function Stat({ icon, label, value, note, accent }) {
 }
 
 function Transactions() {
+  const { user } = useContext(Auth);
   const { data, error, loading, reload } = useResource("/transactions");
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
@@ -1032,10 +906,7 @@ function Transactions() {
               <Icon name="external" size={16} />
               Guest Booth
             </a>
-            <Link className="button primary" to="/operator/transactions/new">
-              <Icon name="plus" size={18} />
-              New transaction
-            </Link>
+            {user.role !== "supervisor" && <Link className="button primary" to="/operator/transactions/new"><Icon name="plus" size={18} /> New transaction</Link>}
           </div>
         }
       />
@@ -1148,10 +1019,10 @@ function PackageCard({ pkg, selected, onSelect, onEdit }) {
           )}
         </button>
       ) : (
-        <button className="button secondary full" onClick={onEdit}>
+        onEdit ? <button className="button secondary full" onClick={onEdit}>
           <Icon name="edit" size={16} />
           Edit package
-        </button>
+        </button> : <p className="package-history-note">Package history is retained for linked transactions.</p>
       )}
     </article>
   );
@@ -1303,7 +1174,7 @@ function NewTransaction() {
           </button>
           <p className="fine-print">
             <Icon name="shield" size={15} />
-            No payment is collected. A real transaction record will be created.
+            Simulation only. No money is collected; this test record is excluded from real revenue.
           </p>
         </aside>
       </div>
@@ -1343,6 +1214,7 @@ function Steps({ current }) {
 }
 
 function TransactionDetail() {
+  const { user } = useContext(Auth);
   const { id } = useParams();
   const { data, error, loading, reload } = useResource(`/transactions/${id}`);
   const [busy, setBusy] = useState(null);
@@ -1489,7 +1361,7 @@ function TransactionDetail() {
                     <div>
                       <strong>Awaiting Guest Action</strong>
                       <p style={{ marginTop: "4px" }}>
-                        This historical transaction is awaiting payment. Public visitors now start free sessions from the booth homepage.
+                        This historical transaction is awaiting payment. New public booth checkouts are completed by the internal simulator.
                       </p>
                     </div>
                   </div>
@@ -1519,6 +1391,7 @@ function TransactionDetail() {
                 </div>
               )}
 
+              {user.role !== "supervisor" && <>
               {/* Exception Handling / Manual Actions */}
               <div style={{ marginTop: "32px", borderTop: "1px solid #eef2ef", paddingTop: "20px" }}>
                 <button
@@ -1544,7 +1417,7 @@ function TransactionDetail() {
                           Manual Confirm Payment
                         </button>
                       )}
-                      {paid && tx.token_status !== "issued" && (
+                      {paid && !tx.session_id && tx.token_status !== "issued" && (
                         <button
                           className="button primary"
                           disabled={busy === "token"}
@@ -1561,6 +1434,7 @@ function TransactionDetail() {
                   </div>
                 )}
               </div>
+              </>}
             </section>
 
             <aside className="panel order-summary">
@@ -1584,6 +1458,7 @@ function TransactionDetail() {
                   <dt>Payment method</dt>
                   <dd>{tx.payment_method?.toUpperCase()}{tx.is_simulated ? " (SIMULATED)" : ""}</dd>
                 </div>
+                {tx.payment_reference && <div><dt>Payment reference</dt><dd>{tx.payment_reference}</dd></div>}
                 <div>
                   <dt>Status</dt>
                   <dd>
@@ -1596,7 +1471,7 @@ function TransactionDetail() {
                 </div>
                 <div>
                   <dt>Token Status</dt>
-                  <dd className="capitalize">{tx.token_status || "Not issued"}</dd>
+                  <dd className="capitalize">{tx.token_status || tx.session_status || "Not issued"}</dd>
                 </div>
               </dl>
               <div className="summary-simulation">
@@ -1613,21 +1488,16 @@ function TransactionDetail() {
 }
 
 function Packages() {
+  const { user } = useContext(Auth);
   const { data, error, loading, reload } = useResource("/packages");
-  const [editing, setEditing] = useState(null);
   const packages = data?.packages || [];
   return (
     <>
       <PageHeading
         eyebrow="THE SESSION COLLECTION"
         title="Photo packages"
-        description="Historical package terms. Public visitors now start free sessions."
-        action={
-          <button className="button primary" onClick={() => setEditing({})}>
-            <Icon name="plus" size={18} />
-            Add package
-          </button>
-        }
+        description="Current package catalogue and saved transaction history."
+        action={user.role === "admin" ? <Link className="button primary" to="/operator/admin/packages"><Icon name="edit" size={16} /> Manage packages</Link> : null}
       />
       <ErrorNotice error={error} onRetry={reload} />
       <div className="section-heading">
@@ -1635,7 +1505,7 @@ function Packages() {
           <h2>
             Your packages <span className="count-pill">{packages.length}</span>
           </h2>
-          <p>Active packages are automatically visible to public guests.</p>
+          <p>Visitors see active four-photo packages. Transactions retain their saved package and price snapshots.</p>
         </div>
         <span className="muted small-text">
           {packages.filter((pkg) => pkg.is_active).length} active
@@ -1647,16 +1517,10 @@ function Packages() {
         <div className="panel">
           <Empty
             icon="box"
-            title="Make your first package"
-            action={
-              <button className="button primary" onClick={() => setEditing({})}>
-                <Icon name="plus" size={16} />
-                Add package
-              </button>
-            }
+            title="No packages have been created"
+            action={user.role === "admin" ? <Link className="button primary" to="/operator/admin/packages"><Icon name="plus" size={16} /> Create package</Link> : null}
           >
-            A great session starts with a package. Set a price, photo count, and
-            duration.
+            An authorized administrator can create the first package. Existing four-photo sessions remain available through the free booth flow.
           </Empty>
         </div>
       ) : (
@@ -1665,20 +1529,9 @@ function Packages() {
             <PackageCard
               key={pkg.id}
               pkg={pkg}
-              onEdit={() => setEditing(pkg)}
             />
           ))}
         </div>
-      )}
-      {editing && (
-        <PackageModal
-          pkg={editing}
-          close={() => setEditing(null)}
-          saved={() => {
-            setEditing(null);
-            reload();
-          }}
-        />
       )}
     </>
   );

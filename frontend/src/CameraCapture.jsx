@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { drawCameraFrame } from "../../shared/camera-capture.js";
+import { Camera } from "lucide-react";
+import { drawCameraFrame, encodeJpegWithinLimit } from "../../shared/camera-capture.js";
 import "./camera.css";
 
 function cameraError(error) {
@@ -143,7 +144,15 @@ export default function CameraCapture({ session, nextSequence, onConfirm }) {
     const context = canvas.getContext("2d", { alpha: false });
     if (!context) { setError("This browser could not create an image canvas."); return; }
     drawCameraFrame(context, element, canvas.width, canvas.height, { mirrorHorizontal: mirrorSelfiePhotos });
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.94));
+    let blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.94));
+    const maxUploadBytes = Number(import.meta.env.VITE_MAX_PHOTO_UPLOAD_BYTES);
+    if (blob && Number.isInteger(maxUploadBytes) && maxUploadBytes > 0 && blob.size > maxUploadBytes) {
+      try { blob = await encodeJpegWithinLimit(canvas, maxUploadBytes); }
+      catch (failure) {
+        if (mounted.current && job === captureJob.current) setError(failure.message);
+        return;
+      }
+    }
     if (!mounted.current || job !== captureJob.current) return;
     if (!blob) { setError("The camera frame could not be encoded. Please retake the photo."); return; }
     clearCapture();
@@ -210,14 +219,13 @@ export default function CameraCapture({ session, nextSequence, onConfirm }) {
         <div className={`camera-stage ${capture ? "has-capture" : ""}`} style={{ aspectRatio: `${capture?.width || video.current?.videoWidth || 16} / ${capture?.height || video.current?.videoHeight || 9}` }}>
           <video ref={video} autoPlay muted playsInline className={`camera-video${mirrorSelfiePhotos ? " is-mirrored" : ""}`} aria-label="Live webcam preview" onCanPlay={() => { if (media.current && video.current?.videoWidth) setStatus("live"); }} />
           {capture && <img src={capture.url} alt="Your actual captured camera photo" className="camera-captured" />}
-          {!capture && status === "stopped" && <div className="camera-off-state"><span aria-hidden="true">◉</span><strong>Ready when you are.</strong><p>Start your webcam to see the live preview.</p></div>}
+          {!capture && status === "stopped" && <div className="camera-off-state"><Camera size={38} strokeWidth={1.4} aria-hidden="true"/><strong>Ready when you are.</strong><p>Start your webcam to see the live preview.</p></div>}
           {!capture && status === "starting" && <div className="camera-off-state" role="status"><span className="spinner"/><p>Allow camera access in your browser.</p></div>}
           {countdown !== null && <div className="camera-countdown" aria-live="assertive" role="status">{countdown}</div>}
         </div>
         <p className="camera-caption">{capture ? `${capture.width} × ${capture.height} · ${mirrorSelfiePhotos ? "Mirrored selfie" : "Camera orientation"}` : mirrorSelfiePhotos ? "Live preview and saved selfie are mirrored together." : "Live preview and saved photo use the camera orientation."}</p>
       </div>
       <aside className="camera-control-panel" aria-label="Camera controls">
-        <div className="camera-control-progress"><strong>Photo {capture?.sequence || sequence} <span>of {photoLimit}</span></strong><div className="camera-dots" aria-label={`${photosTaken} of ${photoLimit} photos saved`}>{Array.from({ length: photoLimit }, (_, index) => <span key={index} className={index < photosTaken ? "saved" : index + 1 === sequence ? "current" : ""}>{index + 1}</span>)}</div></div>
         {devices.length > 1 && !capture && <label className="camera-device-label">Camera<select value={deviceId} disabled={saving || countdown !== null || unavailable} onChange={(event) => { setDeviceId(event.target.value); if (status !== "stopped") startCamera(event.target.value); }}>{devices.map((device, index) => <option key={device.deviceId || index} value={device.deviceId}>{device.label || `Camera ${index + 1}`}</option>)}</select></label>}
         <label className="camera-mirror-setting"><input type="checkbox" checked={mirrorSelfiePhotos} disabled={Boolean(capture) || countdown !== null || saving} onChange={(event) => setMirrorPreference(event.target.checked)} /><span><strong>Mirror selfie photos</strong><small>When on, the live preview and saved photos match.</small></span></label>
         <p className="camera-original-note">Filters are chosen after all four original photographs are saved.</p>

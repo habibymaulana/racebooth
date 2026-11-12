@@ -187,7 +187,7 @@ function FramePreview({ frame, selected }) {
           }}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M14 5l1.5 2H20v12H4V7h4.5L10 5z"/><circle cx="12" cy="13" r="3"/></svg></div>
         ))}
       </div>
-      {selected && <div className="frame-selected-badge" aria-label="Selected">✓ Selected</div>}
+      {selected && <div className="frame-selected-badge" aria-label="Selected"><svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12 4 4L19 6"/></svg> Selected</div>}
     </div>
   );
 }
@@ -199,12 +199,12 @@ export default function FrameSelector({ selected, onSelect }) {
   return (
     <div className="frame-selector">
       <div className="frame-selector-header">
-        <span className="rb-eyebrow">STEP 1 OF 3 · 12 ORIGINAL FRAMES</span>
+        <span className="rb-eyebrow">12 ORIGINAL FRAMES · SELECT ONE</span>
         <h2>Choose your frame design</h2>
-        <p>Pick the aesthetic that matches your mood today. All designs are 100% free.</p>
+        <p>Pick the aesthetic that matches your mood. Every session includes one selected frame.</p>
       </div>
       <div className="frame-carousel-shell">
-        <button type="button" className="frame-carousel-arrow previous" onClick={() => move(-1)} aria-label="Show previous frame designs">‹</button>
+        <button type="button" className="frame-carousel-arrow previous" onClick={() => move(-1)} aria-label="Show previous frame designs"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>
         <div className="frame-carousel" ref={carousel} tabIndex={0} aria-label="Photostrip frame designs">
         {FRAMES.map(frame => (
           <button
@@ -232,7 +232,7 @@ export default function FrameSelector({ selected, onSelect }) {
           </button>
         ))}
         </div>
-        <button type="button" className="frame-carousel-arrow next" onClick={() => move(1)} aria-label="Show more frame designs">›</button>
+        <button type="button" className="frame-carousel-arrow next" onClick={() => move(1)} aria-label="Show more frame designs"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg></button>
       </div>
       <p className="frame-carousel-hint">Swipe, scroll, or use the arrows to browse all 12 designs.</p>
     </div>
